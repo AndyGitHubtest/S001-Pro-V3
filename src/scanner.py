@@ -145,11 +145,21 @@ class Scanner:
         "USELESS/USDT", "PAXG/USDT",
     }
     
-    # 单字母币种过滤 (A/USDT, B/USDT 等通常是低质量)
-    SINGLE_LETTER_MIN_VOLUME = 50  # 单字母币种必须有更高数据量门槛
+    # 预筛门槛: 24h USDT成交量最低500万才有资格进入配对
+    PRE_FILTER_MIN_VOL_USDT = 5_000_000
     
     def _fetch_symbols(self) -> List[str]:
-        """从共享数据库获取候选币种列表 — 全量扫描，按流动性排序"""
+        """从共享数据库获取候选币种列表
+        
+        预筛逻辑 (快速，在币种级别淘汰垃圾):
+        1. 24h有≥1000条1m数据 (数据完整)
+        2. 历史总数据≥30天 (43200条)
+        3. 24h USDT成交量 ≥ 500万 (流动性门槛)
+        4. 不在黑名单 (股票/商品/稳定币)
+        5. 非单字母/中文垃圾币
+        
+        通过预筛后才生成配对，大幅减少计算量。
+        """
         try:
             logger.info(f"DB klines_db_path: {self.db.klines_db_path}")
             
@@ -162,8 +172,8 @@ class Scanner:
             logger.info("K线数据库已连接")
             cursor = conn.cursor()
             
-            # 全量获取: 有最近24h数据 + 总数据量≥30天(43200条1m)的币种
-            # 按24h成交量(volume*close估算USDT)降序排列
+            # SQL预筛: 24h数据完整 + 历史≥30天 + 成交量≥500万USDT
+            min_vol = self.PRE_FILTER_MIN_VOL_USDT
             cursor.execute("""
                 SELECT s.symbol, s.cnt, s.vol_usdt
                 FROM (
@@ -173,7 +183,7 @@ class Scanner:
                     FROM klines 
                     WHERE ts > (SELECT MAX(ts) - 86400000 FROM klines)
                     GROUP BY symbol
-                    HAVING cnt >= 1000
+                    HAVING cnt >= 1000 AND SUM(volume * close) >= ?
                 ) s
                 INNER JOIN (
                     SELECT symbol, COUNT(*) as total 
@@ -182,29 +192,37 @@ class Scanner:
                     HAVING total >= 43200
                 ) t ON s.symbol = t.symbol
                 ORDER BY s.vol_usdt DESC
-            """)
+            """, (min_vol,))
             rows = cursor.fetchall()
             
-            # 过滤黑名单 + 单字母垃圾
+            # Python层过滤: 黑名单 + 垃圾币
             symbols = []
+            filtered_reasons = {'blacklist': 0, 'chinese': 0, 'single_letter': 0}
             for symbol, cnt, vol_usdt in rows:
-                # 黑名单过滤
                 if symbol in self.SYMBOL_BLACKLIST:
+                    filtered_reasons['blacklist'] += 1
                     continue
-                # 中文字符过滤
-                if any('一' <= ch <= '鿿' for ch in symbol):
+                if any('\u4e00' <= ch <= '\u9fff' for ch in symbol):
+                    filtered_reasons['chinese'] += 1
                     continue
-                # 单字母币种过滤 (如 A/USDT, B/USDT)
                 base = symbol.split("/")[0] if "/" in symbol else symbol
                 if len(base) <= 1:
-                    continue
-                # 24h成交量为0的过滤
-                if vol_usdt is None or vol_usdt <= 0:
+                    filtered_reasons['single_letter'] += 1
                     continue
                 symbols.append(symbol)
             
-            logger.info(f"从共享数据库获取到 {len(symbols)} 个币种 "
-                       f"(原始{len(rows)}, 过滤{len(rows)-len(symbols)})")
+            total_filtered = sum(filtered_reasons.values())
+            logger.info(f"预筛结果: {len(rows)}个≥{min_vol/1e6:.0f}M USDT → "
+                       f"{len(symbols)}个合格 "
+                       f"(黑名单{filtered_reasons['blacklist']}, "
+                       f"中文{filtered_reasons['chinese']}, "
+                       f"单字母{filtered_reasons['single_letter']})")
+            
+            # 打印前10方便诊断
+            if symbols:
+                top_syms = symbols[:10]
+                logger.info(f"Top 10: {', '.join(top_syms)}")
+            
             return symbols
             
         except Exception as e:
