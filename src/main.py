@@ -283,9 +283,19 @@ class Strategy:
                 unrealized=round(unrealized, 2))
     
     def _start_web_server(self):
-        """启动Web服务器 (在独立线程)"""
+        """启动Web服务器 V2 (在独立线程)"""
         try:
-            self.monitor.start_web()
+            # 使用新的V2 Web服务器
+            from monitoring.web_server_v2 import create_web_server
+            import uvicorn
+            
+            app = create_web_server(strategy=self, db=self.db, config=self.cfg)
+            uvicorn.run(
+                app,
+                host=self.cfg.web.get('host', '0.0.0.0'),
+                port=self.cfg.web.get('port', 8000),
+                log_level='warning'
+            )
         except Exception as e:
             logger.error(f"Web server error: {e}")
     
