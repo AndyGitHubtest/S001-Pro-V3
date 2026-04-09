@@ -126,31 +126,19 @@ class Strategy:
     
     @trace_step("Strategy", "执行扫描")
     def _run_scan(self):
-        """执行扫描"""
-        log_info("Strategy", "开始扫描", pools=["primary", "secondary"])
+        """执行扫描 — 单池模式"""
+        log_info("Strategy", "开始扫描")
         
         try:
-            # 扫描主池
-            with trace_context("Strategy", "扫描主池"):
-                primary_pairs = self.scanner.scan("primary")
-                log_info("Strategy", "主池扫描完成", pair_count=len(primary_pairs))
-                logger.info(f"Primary pool: {len(primary_pairs)} pairs")
+            with trace_context("Strategy", "扫描配对"):
+                pairs = self.scanner.scan("primary")
+                log_info("Strategy", "扫描完成", pair_count=len(pairs))
+                logger.info(f"Scan result: {len(pairs)} pairs")
             
-            # 扫描次池
-            with trace_context("Strategy", "扫描次池"):
-                secondary_pairs = self.scanner.scan("secondary")
-                log_info("Strategy", "次池扫描完成", pair_count=len(secondary_pairs))
-                logger.info(f"Secondary pool: {len(secondary_pairs)} pairs")
-            
-            # 发送通知
             self.monitor.notify_event('scan_completed', {
-                'primary_count': len(primary_pairs),
-                'secondary_count': len(secondary_pairs),
+                'pair_count': len(pairs),
                 'timestamp': datetime.now().isoformat()
             })
-            
-            log_info("Strategy", "扫描全部完成", 
-                    total_pairs=len(primary_pairs) + len(secondary_pairs))
             
         except Exception as e:
             log_error("Strategy", "扫描失败", e)
@@ -174,14 +162,9 @@ class Strategy:
             self._run_scan()
             last_scan_time_ref[0] = time.time()
         
-        # 2. 处理主池
-        with trace_context("Strategy", "处理主池Tick"):
+        # 2. 处理交易信号
+        with trace_context("Strategy", "处理Tick"):
             self.engine.process_tick("primary")
-        
-        # 3. 处理次池 (每5个tick处理一次)
-        if self.stats['ticks'] % 5 == 0:
-            with trace_context("Strategy", "处理次池Tick"):
-                self.engine.process_tick("secondary")
         
         # 4. 更新统计
         self.stats['ticks'] += 1
@@ -266,13 +249,10 @@ class Strategy:
     def _print_status(self):
         """打印状态"""
         positions = self.engine.position_mgr.get_all_positions()
-        primary_count = self.engine.position_mgr.get_position_count("primary")
-        secondary_count = self.engine.position_mgr.get_position_count("secondary")
-        
         unrealized = sum(p.unrealized_pnl or 0 for p in positions)
         
         status_msg = f"Status | Ticks: {self.stats['ticks']} | "
-        status_msg += f"Positions: {len(positions)} (P:{primary_count} S:{secondary_count}) | "
+        status_msg += f"Positions: {len(positions)} | "
         status_msg += f"Unrealized: {unrealized:+.2f} USDT"
         
         logger.info(status_msg)
