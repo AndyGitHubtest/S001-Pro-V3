@@ -1,0 +1,22 @@
+# S001-Pro V3 Dependencies
+
+# Web Framework
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# Data & Math
+numpy>=1.24.0,<2.1
+pandas>=2.0.0
+scipy>=1.11.0
+
+# Exchange API
+ccxt>=4.2.0
+
+# Config
+pyyaml>=6.0.1
+
+# HTTP Client (for Telegram)
+requests>=2.31.0
+
+# Database (SQLite3 is built-in)
+# No additional packages needed

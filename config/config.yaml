@@ -1,0 +1,121 @@
+# S001-Pro V3 Configuration
+version: "3.0.0"
+
+# === Data Source (Data-Core API) ===
+data_core:
+  api_url: "http://localhost:8080/api"
+  timeout: 30
+  retry: 3
+
+# === Database ===
+database:
+  klines_db: "data/klines.db"      # Data-Core提供，只读
+  state_db: "data/strategy.db"      # 策略状态，读写
+  cache_size: 500
+
+# === Trading Parameters ===
+trading:
+  # 主池 (15m)
+  primary:
+    timeframe: "15m"
+    top_n: 30
+    capital_ratio: 0.7
+    z_entry_default: 2.5
+    z_exit_default: 0.5
+    z_stop_offset_default: 2.0
+  
+  # 次池 (5m)
+  secondary:
+    timeframe: "5m"
+    top_n: 10
+    capital_ratio: 0.3
+    max_per_day: 3
+    z_entry_default: 2.0
+    z_exit_default: 0.4
+    z_stop_offset_default: 1.5
+  
+  # 过滤器 (30m)
+  filter:
+    timeframe: "30m"
+    threshold: 1.0  # |Z_30m| < 1.0
+  
+  # 通用
+  max_positions: 5
+  min_per_pair: 50
+  max_per_pair_ratio: 0.20
+  loop_interval: 5  # seconds
+
+# === Layer 1: Statistical Foundation ===
+layer1:
+  corr_median_min: 0.65
+  coint_p_max: 0.1
+  adf_p_max: 0.1
+
+# === Layer 2: Mean Reversion Stability ===
+layer2:
+  half_life_max: 48
+  corr_std_max: 0.12
+  hurst_max: 0.6
+
+# === Layer 3: Tradeability ===
+layer3:
+  zscore_max_min: 2.2
+  spread_std_min: 0.001
+  volume_min: 3000000  # USDT
+  bid_ask_max: 0.0002  # 0.02%
+
+# === Scoring Weights ===
+scoring:
+  w_coint: 0.30
+  w_corr: 0.20
+  w_halflife: 0.15
+  w_zmax: 0.15
+  w_stability: 0.10
+  w_volume: 0.10
+
+# === Pair Exclusion ===
+exclusion:
+  mode: "soft"
+  max_per_symbol: 3
+
+# === Parameter Optimization ===
+optimization:
+  coarse:
+    z_entry: {min: 2.0, max: 6.0, step: 0.5}
+    z_exit: {min: 0.25, max: 2.0, step: 0.5}
+    stop_offset: {min: 1.0, max: 3.0, step: 1.0}
+  fine:
+    range: 0.5
+    step: 0.25
+  early_exit:
+    min_pf_to_refine: 1.5
+    max_backtests: 200
+
+# === Output Filters ===
+output:
+  min_pf: 1.3
+  min_profit: 0
+
+# === Web Monitor ===
+web:
+  host: "0.0.0.0"
+  port: 8000
+  refresh: 5
+
+# === Notification ===
+notification:
+  telegram:
+    enabled: false
+    bot_token: ""  # From env: TELEGRAM_BOT_TOKEN
+    chat_id: ""    # From env: TELEGRAM_CHAT_ID
+  events:
+    - position_opened
+    - position_closed
+    - error
+
+# === Logging ===
+logging:
+  level: "INFO"
+  file: "data/strategy.log"
+  max_size: "10MB"
+  backup_count: 5
