@@ -141,6 +141,8 @@ class Config:
     @classmethod
     def from_yaml(cls, path: str = "config/config.yaml") -> "Config":
         """从YAML文件加载配置"""
+        import re
+        
         with open(path, 'r') as f:
             data = yaml.safe_load(f)
         
@@ -149,6 +151,24 @@ class Config:
             data['notification']['telegram']['bot_token'] = os.getenv('TELEGRAM_BOT_TOKEN')
         if os.getenv('TELEGRAM_CHAT_ID'):
             data['notification']['telegram']['chat_id'] = os.getenv('TELEGRAM_CHAT_ID')
+        
+        # 🔥 关键修复: 用正则表达式直接读取API Key，绕过YAML 6.0+的字符串问题
+        # YAML 6.0+ 读取的字符串会导致ccxt签名错误
+        with open(path, 'r') as f:
+            content = f.read()
+            
+        api_key_match = re.search(r'api_key:\s*"([^"]*)"', content)
+        api_secret_match = re.search(r'api_secret:\s*"([^"]*)"', content)
+        
+        if api_key_match and 'exchange' in data:
+            key_from_regex = api_key_match.group(1)
+            if key_from_regex and len(key_from_regex) > 10:  # 确保不是空字符串
+                data['exchange']['api_key'] = key_from_regex
+                
+        if api_secret_match and 'exchange' in data:
+            secret_from_regex = api_secret_match.group(1)
+            if secret_from_regex and len(secret_from_regex) > 10:
+                data['exchange']['api_secret'] = secret_from_regex
         
         return cls._from_dict(data)
     
