@@ -27,8 +27,8 @@ class Layer2Config:
 class Layer3Config:
     zscore_max_min: float = 2.2
     spread_std_min: float = 0.001
-    volume_min: int = 3_000_000
-    bid_ask_max: float = 0.0002
+    volume_min: int = 3_000_000       # USDT计价日成交量
+    bid_ask_max: float = 0.003        # (high-low)/close中位数上限, 0.3%
 
 
 @dataclass

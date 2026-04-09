@@ -130,10 +130,27 @@ class Scanner:
         
         return pair_records
     
+    # 垃圾币/非主流过滤黑名单
+    SYMBOL_BLACKLIST = {
+        # 股票代币
+        "TSLA/USDT", "MSTR/USDT", "AMZN/USDT", "COIN/USDT", "PLTR/USDT",
+        "NVDA/USDT", "GOOGL/USDT", "META/USDT", "AAPL/USDT", "HOOD/USDT",
+        "TSM/USDT", "MU/USDT", "SNDK/USDT", "INTC/USDT",
+        # 指数/商品
+        "SPY/USDT", "QQQ/USDT", "XAU/USDT", "XAG/USDT", "XPT/USDT",
+        "XPD/USDT", "BTCDOM/USDT", "CL/USDT", "BZ/USDT", "NATGAS/USDT",
+        # 稳定币 (无波动，不适合套利)
+        "USDC/USDT", "FRAX/USDT", "PUMPBTC/USDT", "XAUT/USDT",
+        # Meme/垃圾 (中文名、单字母等明显垃圾)
+        "USELESS/USDT", "PAXG/USDT",
+    }
+    
+    # 单字母币种过滤 (A/USDT, B/USDT 等通常是低质量)
+    SINGLE_LETTER_MIN_VOLUME = 50  # 单字母币种必须有更高数据量门槛
+    
     def _fetch_symbols(self) -> List[str]:
-        """从共享数据库获取候选币种列表"""
+        """从共享数据库获取候选币种列表 — 全量扫描，按流动性排序"""
         try:
-            # 调试信息
             logger.info(f"DB klines_db_path: {self.db.klines_db_path}")
             
             conn = self.db._get_klines_connection()
@@ -142,22 +159,52 @@ class Scanner:
                 return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT",
                         "ARB/USDT", "OP/USDT", "MATIC/USDT", "LINK/USDT"]
             
-            logger.info(f"K线数据库已连接")
+            logger.info("K线数据库已连接")
             cursor = conn.cursor()
             
-            # 获取流动性最好的币种 (限制数量以控制扫描时间)
-            # 按数据量排序，优先选择交易活跃的币种
+            # 全量获取: 有最近24h数据 + 总数据量≥30天(43200条1m)的币种
+            # 按24h成交量(volume*close估算USDT)降序排列
             cursor.execute("""
-                SELECT symbol, COUNT(*) as cnt FROM klines 
-                WHERE ts > (SELECT MAX(ts) - 86400000 FROM klines)
-                GROUP BY symbol
-                ORDER BY cnt DESC
-                LIMIT 20
+                SELECT s.symbol, s.cnt, s.vol_usdt
+                FROM (
+                    SELECT symbol, 
+                           COUNT(*) as cnt,
+                           SUM(volume * close) as vol_usdt
+                    FROM klines 
+                    WHERE ts > (SELECT MAX(ts) - 86400000 FROM klines)
+                    GROUP BY symbol
+                    HAVING cnt >= 1000
+                ) s
+                INNER JOIN (
+                    SELECT symbol, COUNT(*) as total 
+                    FROM klines 
+                    GROUP BY symbol
+                    HAVING total >= 43200
+                ) t ON s.symbol = t.symbol
+                ORDER BY s.vol_usdt DESC
             """)
             rows = cursor.fetchall()
-            symbols = [row[0] for row in rows]
             
-            logger.info(f"从共享数据库获取到 {len(symbols)} 个币种")
+            # 过滤黑名单 + 单字母垃圾
+            symbols = []
+            for symbol, cnt, vol_usdt in rows:
+                # 黑名单过滤
+                if symbol in self.SYMBOL_BLACKLIST:
+                    continue
+                # 中文字符过滤
+                if any('一' <= ch <= '鿿' for ch in symbol):
+                    continue
+                # 单字母币种过滤 (如 A/USDT, B/USDT)
+                base = symbol.split("/")[0] if "/" in symbol else symbol
+                if len(base) <= 1:
+                    continue
+                # 24h成交量为0的过滤
+                if vol_usdt is None or vol_usdt <= 0:
+                    continue
+                symbols.append(symbol)
+            
+            logger.info(f"从共享数据库获取到 {len(symbols)} 个币种 "
+                       f"(原始{len(rows)}, 过滤{len(rows)-len(symbols)})")
             return symbols
             
         except Exception as e:
@@ -543,22 +590,22 @@ class Scanner:
         return float(np.std(spread))
     
     def _get_min_volume(self, sym_a: str, sym_b: str) -> int:
-        """获取最小日成交量 (从共享K线数据库)"""
+        """获取最小日成交量 (USDT计价，volume*close)"""
         try:
             conn = self.db._get_klines_connection()
             if conn is None:
-                return 0  # 无数据库则返回0让filter决定
+                return 0
             cursor = conn.cursor()
-            # 取最近24h的成交量之和，取两个币种中的较小值
+            # volume字段是基础币种单位(如BTC)，需要×close转为USDT
             cursor.execute("""
-                SELECT COALESCE(SUM(volume), 0) FROM klines 
+                SELECT COALESCE(SUM(volume * close), 0) FROM klines 
                 WHERE symbol = ? AND interval = '1m'
                 AND ts > (SELECT MAX(ts) - 86400000 FROM klines)
             """, (sym_a,))
             vol_a = cursor.fetchone()[0] or 0
             
             cursor.execute("""
-                SELECT COALESCE(SUM(volume), 0) FROM klines 
+                SELECT COALESCE(SUM(volume * close), 0) FROM klines 
                 WHERE symbol = ? AND interval = '1m'
                 AND ts > (SELECT MAX(ts) - 86400000 FROM klines)
             """, (sym_b,))
@@ -570,32 +617,39 @@ class Scanner:
             return 0
     
     def _get_max_bid_ask_spread(self, sym_a: str, sym_b: str) -> float:
-        """获取最大买卖价差百分比 (估算: 用close价格的波动率近似)"""
+        """获取最大买卖价差百分比
+        
+        注意: 1m K线的(high-low)/close不是bid-ask spread，
+        而是分钟内价格波动范围(通常0.03%~0.1%)。
+        真实bid-ask spread约为此值的1/5~1/10。
+        
+        我们用最小的(high-low)/close作为流动性代理指标:
+        值越小→流动性越好→bid-ask越小
+        """
         try:
             conn = self.db._get_klines_connection()
             if conn is None:
-                return 1.0  # 无数据则返回极大值让filter决定
+                return 1.0
             cursor = conn.cursor()
-            # 用最近100条1m K线的 (high-low)/close 平均值近似 bid-ask spread
+            # 用最近100条1m的 MEDIAN((high-low)/close) 作为流动性指标
+            # 取中位数比平均值更稳健(不受异常K线影响)
             cursor.execute("""
-                SELECT AVG((high - low) / NULLIF(close, 0)) FROM (
-                    SELECT high, low, close FROM klines 
-                    WHERE symbol = ? AND interval = '1m'
-                    ORDER BY ts DESC LIMIT 100
-                )
+                SELECT (high - low) / NULLIF(close, 0) as hl_ratio FROM klines 
+                WHERE symbol = ? AND interval = '1m'
+                ORDER BY ts DESC LIMIT 100
             """, (sym_a,))
-            spread_a = cursor.fetchone()[0] or 1.0
+            ratios_a = sorted([r[0] for r in cursor.fetchall() if r[0] is not None])
+            median_a = ratios_a[len(ratios_a)//2] if ratios_a else 1.0
             
             cursor.execute("""
-                SELECT AVG((high - low) / NULLIF(close, 0)) FROM (
-                    SELECT high, low, close FROM klines 
-                    WHERE symbol = ? AND interval = '1m'
-                    ORDER BY ts DESC LIMIT 100
-                )
+                SELECT (high - low) / NULLIF(close, 0) as hl_ratio FROM klines 
+                WHERE symbol = ? AND interval = '1m'
+                ORDER BY ts DESC LIMIT 100
             """, (sym_b,))
-            spread_b = cursor.fetchone()[0] or 1.0
+            ratios_b = sorted([r[0] for r in cursor.fetchall() if r[0] is not None])
+            median_b = ratios_b[len(ratios_b)//2] if ratios_b else 1.0
             
-            return float(max(spread_a, spread_b))
+            return float(max(median_a, median_b))
         except Exception as e:
             logger.warning(f"获取价差失败 {sym_a}/{sym_b}: {e}")
             return 1.0

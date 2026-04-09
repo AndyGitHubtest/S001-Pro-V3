@@ -194,13 +194,13 @@ class AdaptiveTuner:
             ParamBound(
                 name="layer3.bid_ask_max",
                 current=cfg.layer3.bid_ask_max,
-                hard_min=0.00005,     # 低于0.005%太严格
-                hard_max=0.005,       # 高于0.5%滑点太大
-                relax_step=0.0001,
-                tighten_step=0.00005,
+                hard_min=0.0005,      # 低于0.05%太严格(只有BTC/ETH能过)
+                hard_max=0.01,        # 高于1%流动性太差
+                relax_step=0.0005,
+                tighten_step=0.0003,
                 direction="max",
                 layer=3,
-                description="最大买卖价差百分比"
+                description="(high-low)/close中位数上限"
             ),
             
             # ========== Layer 4: 回测门槛 ==========
