@@ -238,16 +238,20 @@ class WebDashboard:
             
             # 获取最后扫描记录
             cursor.execute("""
-                SELECT timestamp, pool, l3_passed, duration_ms 
+                SELECT scan_time, pool, layer3_passed, duration_ms 
                 FROM scan_history 
-                ORDER BY timestamp DESC 
+                ORDER BY scan_time DESC 
                 LIMIT 1
             """)
             row = cursor.fetchone()
             
             if row:
                 last_scan = row[0]
-                last_scan_dt = datetime.fromisoformat(last_scan)
+                # 处理可能的不同时间格式
+                if isinstance(last_scan, str):
+                    last_scan_dt = datetime.fromisoformat(last_scan.replace(' ', 'T'))
+                else:
+                    last_scan_dt = datetime.fromtimestamp(last_scan)
                 now = datetime.now()
                 elapsed = (now - last_scan_dt).total_seconds()
                 
