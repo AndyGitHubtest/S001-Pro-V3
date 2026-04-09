@@ -123,10 +123,10 @@ class Scanner:
                         "ARB/USDT", "OP/USDT", "MATIC/USDT", "LINK/USDT"]
             
             cursor = conn.cursor()
-            # 获取最近24小时有数据的币种
+            # 获取最近24小时有数据的币种 (Data-Core schema: ts, interval)
             cursor.execute("""
                 SELECT DISTINCT symbol FROM klines 
-                WHERE timestamp > datetime('now', '-1 day')
+                WHERE ts > (strftime('%s', 'now') - 86400) * 1000
                 ORDER BY symbol
                 LIMIT 50
             """)
@@ -249,20 +249,20 @@ class Scanner:
             # 获取timeframe
             timeframe = self.cfg.trading.primary.timeframe if pool == "primary" else self.cfg.trading.secondary.timeframe
             
-            # 查询两个币种的数据
+            # 查询两个币种的数据 (Data-Core schema: ts, interval)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT timestamp, close FROM klines 
-                WHERE symbol = ? AND timeframe = ?
-                ORDER BY timestamp DESC
+                SELECT ts, close FROM klines 
+                WHERE symbol = ? AND interval = ?
+                ORDER BY ts DESC
                 LIMIT 1000
             """, (sym_a, timeframe))
             rows_a = cursor.fetchall()
             
             cursor.execute("""
-                SELECT timestamp, close FROM klines 
-                WHERE symbol = ? AND timeframe = ?
-                ORDER BY timestamp DESC
+                SELECT ts, close FROM klines 
+                WHERE symbol = ? AND interval = ?
+                ORDER BY ts DESC
                 LIMIT 1000
             """, (sym_b, timeframe))
             rows_b = cursor.fetchall()
@@ -271,13 +271,13 @@ class Scanner:
                 logger.debug(f"{sym_a}-{sym_b}: 数据不足 ({len(rows_a)}/{len(rows_b)})")
                 return None
             
-            # 转换为DataFrame并对齐时间戳
-            df_a = pd.DataFrame(rows_a, columns=['timestamp', 'a'])
-            df_b = pd.DataFrame(rows_b, columns=['timestamp', 'b'])
+            # 转换为DataFrame并对齐时间戳 (ts是毫秒时间戳)
+            df_a = pd.DataFrame(rows_a, columns=['ts', 'a'])
+            df_b = pd.DataFrame(rows_b, columns=['ts', 'b'])
             
             # 合并并取交集
-            df = pd.merge(df_a, df_b, on='timestamp', how='inner')
-            df = df.sort_values('timestamp')
+            df = pd.merge(df_a, df_b, on='ts', how='inner')
+            df = df.sort_values('ts')
             
             if len(df) < 120:
                 logger.debug(f"{sym_a}-{sym_b}: 对齐后数据不足 ({len(df)})")
