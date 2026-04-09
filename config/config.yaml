@@ -16,8 +16,13 @@ data_core:
 
 # === Database ===
 database:
-  klines_db: "data/klines.db"      # Data-Core提供，只读
-  state_db: "data/strategy.db"      # 策略状态，读写
+  # 共享K线数据库 (Data-Core提供，策略只读)
+  klines_db: "/home/ubuntu/projects/data-core/data/klines.db"
+  
+  # 策略私有状态数据库 (每个策略独立)
+  state_db: "data/strategy.db"
+  
+  # 缓存配置
   cache_size: 500
 
 # === Trading Parameters (1000 USDT 小资金配置) ===

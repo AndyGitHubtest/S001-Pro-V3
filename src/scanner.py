@@ -345,6 +345,11 @@ class Scanner:
         if len(vars) < 3:
             return 0.5
         
+        # 检查方差是否有效 (必须>0才能取log)
+        vars = np.array(vars)
+        if np.any(vars <= 0) or np.any(np.isnan(vars)):
+            return 0.5  # 数据质量不足，返回中性值
+        
         # 回归: log(var) = 2H * log(lag) + C
         log_lags = np.log(lags[:len(vars)])
         log_vars = np.log(vars)
