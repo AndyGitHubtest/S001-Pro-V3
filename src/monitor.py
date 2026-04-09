@@ -247,12 +247,16 @@ class WebDashboard:
             
             if row:
                 last_scan = row[0]
-                # 处理可能的不同时间格式
+                # 处理可能的不同时间格式 - 统一使用UTC
                 if isinstance(last_scan, str):
+                    # 数据库时间是UTC，需要加上时区信息
                     last_scan_dt = datetime.fromisoformat(last_scan.replace(' ', 'T'))
+                    # 转换为本地时间进行比较
+                    from datetime import timezone
+                    last_scan_dt = last_scan_dt.replace(tzinfo=timezone.utc).astimezone()
                 else:
                     last_scan_dt = datetime.fromtimestamp(last_scan)
-                now = datetime.now()
+                now = datetime.now().astimezone()  # 带时区的当前时间
                 elapsed = (now - last_scan_dt).total_seconds()
                 
                 # 计算下次扫描时间
