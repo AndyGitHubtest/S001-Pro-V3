@@ -142,6 +142,23 @@ class WebDashboard:
             """获取统计信息"""
             return self.db.get_trade_stats(days)
         
+        # ====== P0 新增 API ======
+        @app.get("/api/system")
+        async def get_system():
+            """获取系统资源信息"""
+            from monitoring.system_monitor import get_system_stats
+            return get_system_stats()
+        
+        @app.get("/api/scan_info")
+        async def get_scan_info():
+            """获取扫描信息"""
+            return self._get_scan_info()
+        
+        @app.get("/api/alerts")
+        async def get_alerts(limit: int = 10):
+            """获取最近告警"""
+            return self._get_recent_alerts(limit)
+        
         # HTML页面
         @app.get("/", response_class=HTMLResponse)
         async def dashboard():
@@ -212,8 +229,124 @@ class WebDashboard:
             'exit_reason': trade.exit_reason
         }
     
+    def _get_scan_info(self) -> Dict:
+        """获取扫描信息"""
+        try:
+            # 从数据库获取最后扫描时间
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            
+            # 获取最后扫描记录
+            cursor.execute("""
+                SELECT timestamp, pool, l3_passed, duration_ms 
+                FROM scan_history 
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            
+            if row:
+                last_scan = row[0]
+                last_scan_dt = datetime.fromisoformat(last_scan)
+                now = datetime.now()
+                elapsed = (now - last_scan_dt).total_seconds()
+                
+                # 计算下次扫描时间
+                scan_interval = 3600  # 1小时
+                next_scan_in = max(0, scan_interval - elapsed)
+                
+                return {
+                    'last_scan': last_scan,
+                    'last_scan_ago': self._format_ago(elapsed),
+                    'next_scan_in': self._format_duration(next_scan_in),
+                    'scan_interval_minutes': scan_interval / 60,
+                    'last_pairs_count': row[2],
+                    'last_duration_ms': row[3],
+                    'status': 'normal' if elapsed < scan_interval * 1.5 else 'overdue'
+                }
+            else:
+                return {
+                    'last_scan': None,
+                    'status': 'never',
+                    'message': '暂无扫描记录'
+                }
+                
+        except Exception as e:
+            logger.error(f"获取扫描信息失败: {e}")
+            return {
+                'status': 'error',
+                'error': str(e)
+            }
+    
+    def _get_recent_alerts(self, limit: int = 10) -> Dict:
+        """获取最近告警"""
+        try:
+            # 从日志文件读取最近的警告/错误
+            import os
+            log_file = 'logs/strategy.log'
+            
+            alerts = []
+            if os.path.exists(log_file):
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    
+                # 从后往前找 WARNING/ERROR/CRITICAL
+                for line in reversed(lines[-500:]):  # 最近500行
+                    if 'WARNING' in line or 'ERROR' in line or 'CRITICAL' in line:
+                        # 解析日志
+                        parts = line.split('|')
+                        if len(parts) >= 4:
+                            timestamp = parts[0].strip()
+                            level = parts[1].strip()
+                            message = '|'.join(parts[3:]).strip()
+                            
+                            alerts.append({
+                                'timestamp': timestamp,
+                                'level': level.lower(),
+                                'message': message[:200]  # 截断
+                            })
+                            
+                            if len(alerts) >= limit:
+                                break
+            
+            return {
+                'count': len(alerts),
+                'unread': len([a for a in alerts if a['level'] in ['error', 'critical']]),
+                'alerts': alerts
+            }
+            
+        except Exception as e:
+            logger.error(f"获取告警失败: {e}")
+            return {
+                'count': 0,
+                'error': str(e),
+                'alerts': []
+            }
+    
+    @staticmethod
+    def _format_ago(seconds: float) -> str:
+        """格式化'多久之前'"""
+        if seconds < 60:
+            return f"{int(seconds)}秒前"
+        elif seconds < 3600:
+            return f"{int(seconds/60)}分钟前"
+        elif seconds < 86400:
+            return f"{int(seconds/3600)}小时前"
+        else:
+            return f"{int(seconds/86400)}天前"
+    
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """格式化持续时间"""
+        if seconds < 60:
+            return f"{int(seconds)}秒"
+        elif seconds < 3600:
+            return f"{int(seconds/60)}分钟"
+        else:
+            return f"{int(seconds/3600)}小时"
+    
     def _render_dashboard(self) -> str:
-        """渲染主面板HTML"""
+        """渲染主面板HTML - P0增强版"""
         return """
 <!DOCTYPE html>
 <html>
@@ -226,29 +359,46 @@ class WebDashboard:
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e1a; color: #e0e0e0; padding: 20px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #1a2332; }
         .header h1 { color: #00d4aa; font-size: 24px; }
-        .status { display: flex; gap: 20px; }
-        .status-item { text-align: center; }
-        .status-item .value { font-size: 24px; font-weight: bold; color: #fff; }
-        .status-item .label { font-size: 12px; color: #888; margin-top: 4px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }
-        .card { background: #111827; border-radius: 8px; padding: 20px; border: 1px solid #1a2332; }
-        .card h2 { font-size: 16px; margin-bottom: 15px; color: #00d4aa; }
-        .card h2 span { font-size: 12px; color: #666; margin-left: 10px; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { text-align: left; padding: 10px 5px; color: #888; font-weight: normal; border-bottom: 1px solid #1a2332; }
-        td { padding: 10px 5px; border-bottom: 1px solid #1a2332; }
+        .header .subtitle { color: #888; font-size: 12px; margin-left: 10px; }
+        .status { display: flex; gap: 15px; flex-wrap: wrap; }
+        .status-item { text-align: center; min-width: 70px; }
+        .status-item .value { font-size: 20px; font-weight: bold; color: #fff; }
+        .status-item .label { font-size: 11px; color: #888; margin-top: 4px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 15px; }
+        .card { background: #111827; border-radius: 8px; padding: 15px; border: 1px solid #1a2332; }
+        .card h2 { font-size: 14px; margin-bottom: 12px; color: #00d4aa; display: flex; justify-content: space-between; }
+        .card h2 span { font-size: 11px; color: #666; }
+        .card h2 .indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .indicator-healthy { background: #00d4aa; }
+        .indicator-warning { background: #ff9500; }
+        .indicator-error { background: #ff4757; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { text-align: left; padding: 8px 4px; color: #888; font-weight: normal; border-bottom: 1px solid #1a2332; }
+        td { padding: 8px 4px; border-bottom: 1px solid #1a2332; }
         tr:hover { background: #1a2332; }
         .positive { color: #00d4aa; }
         .negative { color: #ff4757; }
-        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; }
         .badge-long { background: rgba(0, 212, 170, 0.2); color: #00d4aa; }
         .badge-short { background: rgba(255, 71, 87, 0.2); color: #ff4757; }
-        .loading { text-align: center; padding: 40px; color: #666; }
+        .loading { text-align: center; padding: 30px; color: #666; }
+        .info-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a2332; font-size: 12px; }
+        .info-row:last-child { border-bottom: none; }
+        .info-label { color: #888; }
+        .info-value { color: #fff; font-weight: 500; }
+        .alert-item { padding: 8px; margin: 4px 0; border-radius: 4px; font-size: 11px; }
+        .alert-warning { background: rgba(255, 149, 0, 0.1); border-left: 3px solid #ff9500; }
+        .alert-error { background: rgba(255, 71, 87, 0.1); border-left: 3px solid #ff4757; }
+        .alert-critical { background: rgba(255, 45, 85, 0.1); border-left: 3px solid #ff2d55; }
+        .scan-status-normal { color: #00d4aa; }
+        .scan-status-overdue { color: #ff4757; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>📊 S001-Pro V3 Dashboard</h1>
+        <div>
+            <h1>📊 S001-Pro V3 <span class="subtitle" id="uptime">加载中...</span></h1>
+        </div>
         <div class="status" id="status">
             <div class="status-item">
                 <div class="value" id="open-positions">-</div>
@@ -259,6 +409,50 @@ class WebDashboard:
                 <div class="label">今日盈亏</div>
             </div>
             <div class="status-item">
+                <div class="value" id="unrealized">-</div>
+                <div class="label">未实现</div>
+            </div>
+            <div class="status-item">
+                <div class="value" id="cpu">-</div>
+                <div class="label">CPU</div>
+            </div>
+            <div class="status-item">
+                <div class="value" id="memory">-</div>
+                <div class="label">内存</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 新增: 系统信息行 -->
+    <div class="grid" style="margin-bottom: 15px;">
+        <div class="card">
+            <h2><span class="indicator" id="scan-indicator"></span>扫描状态 <span id="scan-time">-</span></h2>
+            <div id="scan-info">
+                <div class="info-row">
+                    <span class="info-label">上次扫描</span>
+                    <span class="info-value" id="last-scan">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">下次扫描</span>
+                    <span class="info-value" id="next-scan">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">配对数量</span>
+                    <span class="info-value" id="pairs-count">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>🚨 系统告警 <span id="alert-count">0</span></h2>
+            <div id="alerts-container">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="grid">
+        <div class="status-item">
                 <div class="value" id="unrealized">-</div>
                 <div class="label">未实现盈亏</div>
             </div>
@@ -298,6 +492,17 @@ class WebDashboard:
     <script>
         async function fetchData() {
             try {
+                // ====== P0: 获取系统资源 ======
+                const systemRes = await fetch('/api/system');
+                const system = await systemRes.json();
+                document.getElementById('uptime').textContent = '运行' + system.uptime;
+                document.getElementById('cpu').textContent = system.cpu_percent + '%';
+                document.getElementById('memory').textContent = system.memory_mb + 'M';
+                
+                // 根据系统状态调整颜色
+                document.getElementById('cpu').className = 'value ' + (system.cpu_percent > 80 ? 'negative' : '');
+                document.getElementById('memory').className = 'value ' + (system.memory_percent > 80 ? 'negative' : '');
+                
                 // 获取状态
                 const statusRes = await fetch('/api/status');
                 const status = await statusRes.json();
@@ -306,6 +511,24 @@ class WebDashboard:
                 document.getElementById('today-pnl').className = 'value ' + (status.today_pnl >= 0 ? 'positive' : 'negative');
                 document.getElementById('unrealized').textContent = (status.unrealized_pnl >= 0 ? '+' : '') + status.unrealized_pnl.toFixed(2);
                 document.getElementById('unrealized').className = 'value ' + (status.unrealized_pnl >= 0 ? 'positive' : 'negative');
+                
+                // ====== P0: 获取扫描信息 ======
+                const scanRes = await fetch('/api/scan_info');
+                const scan = await scanRes.json();
+                if (scan.status === 'normal' || scan.status === 'overdue') {
+                    document.getElementById('last-scan').textContent = scan.last_scan_ago;
+                    document.getElementById('last-scan').className = 'info-value scan-status-' + scan.status;
+                    document.getElementById('next-scan').textContent = scan.next_scan_in;
+                    document.getElementById('pairs-count').textContent = scan.last_pairs_count || '-';
+                    document.getElementById('scan-indicator').className = 'indicator indicator-' + (scan.status === 'normal' ? 'healthy' : 'warning');
+                } else {
+                    document.getElementById('scan-info').innerHTML = '<div class="loading">' + (scan.message || '暂无数据') + '</div>';
+                }
+                
+                // ====== P0: 获取告警 ======
+                const alertsRes = await fetch('/api/alerts');
+                const alerts = await alertsRes.json();
+                renderAlerts(alerts);
                 
                 // 获取持仓
                 const positionsRes = await fetch('/api/positions');
@@ -330,6 +553,26 @@ class WebDashboard:
             } catch (error) {
                 console.error('Fetch error:', error);
             }
+        }
+        
+        // ====== P0: 渲染告警 ======
+        function renderAlerts(alerts) {
+            const container = document.getElementById('alerts-container');
+            document.getElementById('alert-count').textContent = alerts.unread || 0;
+            
+            if (!alerts.alerts || alerts.alerts.length === 0) {
+                container.innerHTML = '<div class="loading">暂无告警</div>';
+                return;
+            }
+            
+            const html = alerts.alerts.slice(0, 5).map(a => {
+                const alertClass = 'alert-' + (a.level === 'critical' ? 'critical' : (a.level === 'error' ? 'error' : 'warning'));
+                const time = a.timestamp.split(' ')[1] || a.timestamp;
+                return '<div class="alert-item ' + alertClass + '">' +
+                    '<strong>' + time + '</strong> ' + a.message +
+                    '</div>';
+            }).join('');
+            container.innerHTML = html;
         }
         
         function renderPositions(positions) {
