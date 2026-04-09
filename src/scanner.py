@@ -116,15 +116,19 @@ class Scanner:
     def _fetch_symbols(self) -> List[str]:
         """从共享数据库获取候选币种列表"""
         try:
+            # 调试信息
+            logger.info(f"DB klines_db_path: {self.db.klines_db_path}")
+            
             conn = self.db._get_klines_connection()
             if conn is None:
                 logger.warning("K线数据库未配置，使用默认币种")
                 return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT",
                         "ARB/USDT", "OP/USDT", "MATIC/USDT", "LINK/USDT"]
             
+            logger.info(f"K线数据库已连接")
             cursor = conn.cursor()
+            
             # 获取所有有数据的币种 (Data-Core schema: ts, interval)
-            # Note: 实际应用时应该检查数据新鲜度
             cursor.execute("""
                 SELECT DISTINCT symbol FROM klines 
                 ORDER BY symbol
@@ -137,6 +141,8 @@ class Scanner:
             
         except Exception as e:
             logger.error(f"获取币种列表失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             # 失败时返回默认币种
             return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
     
