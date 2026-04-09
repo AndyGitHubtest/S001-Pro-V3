@@ -3,8 +3,8 @@
 
 # 核心依赖
 ccxt>=4.0.0
-numpy>=1.24.0,<2.1
-pandas>=2.0.0
+numpy>=1.24.0,<2.0  # 必须<2.0，兼容pandas
+pandas>=2.0.0,<2.3
 requests>=2.31.0
 pyyaml>=6.0.1
 

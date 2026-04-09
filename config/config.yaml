@@ -135,13 +135,14 @@ web:
 # === Notification ===
 notification:
   telegram:
-    enabled: false
+    enabled: true
     bot_token: ""  # From env: TELEGRAM_BOT_TOKEN
     chat_id: ""    # From env: TELEGRAM_CHAT_ID
   events:
     - position_opened
     - position_closed
     - error
+    - recovery_needed
 
 # === Logging ===
 logging:
