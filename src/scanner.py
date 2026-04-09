@@ -73,10 +73,11 @@ class Scanner:
         主扫描流程
         1. 获取候选币种
         2. 生成配对
-        3. 三层筛选
+        3. 三层筛选 (带漏斗统计)
         4. 评分排名
         5. 参数优化
         6. 保存结果
+        7. 自适应调参评估
         """
         logger.info(f"Starting scan for pool '{pool}'")
         start_time = datetime.now()
@@ -89,21 +90,21 @@ class Scanner:
         candidates = self._generate_pairs(symbols)
         logger.info(f"Generated {len(candidates)} candidate pairs")
         
-        # 3-5. 三层筛选 + 评分 + 优化
-        results = self._process_pairs(candidates, pool)
+        # 3-5. 三层筛选 + 评分 + 优化 (带漏斗统计)
+        results, funnel = self._process_pairs_with_funnel(candidates, pool)
         
         # 6. 保存到数据库
         pair_records = [self._to_pair_record(m, pool) for m in results]
         self.db.save_pairs(pool, pair_records)
         
-        # 记录扫描历史
+        # 记录扫描历史 (精确的漏斗数据)
         duration = (datetime.now() - start_time).total_seconds() * 1000
         self.db.log_scan(
             pool=pool,
             candidates=len(candidates),
-            l1=len(candidates),  # 简化，实际应该记录每层通过数
-            l2=len(results) * 2,  # 估算
-            l3=len(results),
+            l1=funnel.layer1_passed,
+            l2=funnel.layer2_passed,
+            l3=funnel.layer3_passed,
             top_n=len(results),
             top_score=results[0].score if results else 0,
             avg_score=np.mean([r.score for r in results]) if results else 0,
@@ -111,6 +112,22 @@ class Scanner:
         )
         
         logger.info(f"Scan completed: {len(results)} pairs saved, duration: {duration:.0f}ms")
+        logger.info(f"Funnel: {funnel.candidates}→{funnel.data_loaded}→"
+                    f"{funnel.layer1_passed}→{funnel.layer2_passed}→"
+                    f"{funnel.layer3_passed}→{funnel.backtest_passed}→{funnel.final_count}")
+        
+        # 7. 自适应调参评估
+        try:
+            from adaptive_tuner import get_tuner
+            tuner = get_tuner()
+            funnel.final_count = len(results)
+            actions = tuner.evaluate_and_tune(pool, funnel)
+            if actions:
+                # 参数已在内存中更新，下一轮扫描自动生效
+                logger.info(f"[Tuner] 已调整 {len(actions)} 个参数，下轮扫描生效")
+        except Exception as e:
+            logger.warning(f"[Tuner] 自适应调参异常 (非致命): {e}")
+        
         return pair_records
     
     def _fetch_symbols(self) -> List[str]:
@@ -159,17 +176,26 @@ class Scanner:
         return pairs
     
     def _process_pairs(self, candidates: List[Tuple[str, str]], pool: str) -> List[PairMetrics]:
-        """处理所有配对: 筛选 + 评分 + 优化"""
+        """处理所有配对: 筛选 + 评分 + 优化 (向后兼容)"""
+        results, _ = self._process_pairs_with_funnel(candidates, pool)
+        return results
+    
+    def _process_pairs_with_funnel(self, candidates: List[Tuple[str, str]], pool: str) -> Tuple[List[PairMetrics], 'FunnelStats']:
+        """处理所有配对: 筛选 + 评分 + 优化 (带漏斗统计)"""
+        from adaptive_tuner import FunnelStats
+        funnel = FunnelStats(candidates=len(candidates))
         results = []
         
         for sym_a, sym_b in candidates:
             try:
-                metrics = self._analyze_pair(sym_a, sym_b, pool)
+                metrics, reject_stage = self._analyze_pair_tracked(sym_a, sym_b, pool, funnel)
                 if metrics:
                     results.append(metrics)
             except Exception as e:
                 logger.warning(f"Failed to analyze {sym_a}-{sym_b}: {e}")
                 continue
+        
+        funnel.backtest_passed = len(results)
         
         # 按评分排序
         results.sort(key=lambda x: x.score, reverse=True)
@@ -179,9 +205,23 @@ class Scanner:
         
         # 取Top N
         pool_cfg = self.cfg.trading.primary if pool == "primary" else self.cfg.trading.secondary
-        return results[:pool_cfg.top_n]
+        final = results[:pool_cfg.top_n]
+        funnel.final_count = len(final)
+        
+        return final, funnel
     
-    def _analyze_pair(self, sym_a: str, sym_b: str, pool: str) -> Optional[PairMetrics]:
+    def _analyze_pair_tracked(self, sym_a: str, sym_b: str, pool: str, 
+                              funnel: 'FunnelStats') -> Tuple[Optional[PairMetrics], str]:
+        """
+        分析单个配对 (带漏斗统计)
+        返回: (PairMetrics或None, 淘汰阶段名)
+        """
+        result = self._analyze_pair(sym_a, sym_b, pool, funnel)
+        reject = "" if result else "filtered"
+        return result, reject
+    
+    def _analyze_pair(self, sym_a: str, sym_b: str, pool: str, 
+                      funnel: 'FunnelStats' = None) -> Optional[PairMetrics]:
         """
         分析单个配对
         返回: PairMetrics (通过所有筛选) 或 None (未通过)
@@ -191,50 +231,82 @@ class Scanner:
         if data is None or len(data) < 120:
             return None
         
+        if funnel:
+            funnel.data_loaded += 1
+        
         m = PairMetrics(symbol_a=sym_a, symbol_b=sym_b)
         
         # ========== Layer 1: Statistical Foundation ==========
         m.corr_median = self._calc_median_correlation(data)
         if m.corr_median < self.layer1.corr_median_min:
+            if funnel:
+                funnel.reject_reasons['L1_corr'] = funnel.reject_reasons.get('L1_corr', 0) + 1
             return None
         
         m.coint_p = self._cointegration_test(data)
         if m.coint_p > self.layer1.coint_p_max:
+            if funnel:
+                funnel.reject_reasons['L1_coint'] = funnel.reject_reasons.get('L1_coint', 0) + 1
             return None
         
         m.adf_p = self._adf_test(data)
         if m.adf_p > self.layer1.adf_p_max:
+            if funnel:
+                funnel.reject_reasons['L1_adf'] = funnel.reject_reasons.get('L1_adf', 0) + 1
             return None
+        
+        if funnel:
+            funnel.layer1_passed += 1
         
         # ========== Layer 2: Stability ==========
         m.half_life = self._calc_half_life(data)
         if m.half_life > self.layer2.half_life_max:
+            if funnel:
+                funnel.reject_reasons['L2_hl'] = funnel.reject_reasons.get('L2_hl', 0) + 1
             return None
         
         m.corr_std = self._calc_rolling_correlation_std(data)
         if m.corr_std > self.layer2.corr_std_max:
+            if funnel:
+                funnel.reject_reasons['L2_corr_std'] = funnel.reject_reasons.get('L2_corr_std', 0) + 1
             return None
         
         m.hurst = self._calc_hurst_exponent(data)
         if m.hurst > self.layer2.hurst_max:
+            if funnel:
+                funnel.reject_reasons['L2_hurst'] = funnel.reject_reasons.get('L2_hurst', 0) + 1
             return None
+        
+        if funnel:
+            funnel.layer2_passed += 1
         
         # ========== Layer 3: Tradeability ==========
         m.zscore_max = self._calc_max_zscore(data)
         if m.zscore_max < self.layer3.zscore_max_min:
+            if funnel:
+                funnel.reject_reasons['L3_zmax'] = funnel.reject_reasons.get('L3_zmax', 0) + 1
             return None
         
         m.spread_std = self._calc_spread_std(data)
         if m.spread_std < self.layer3.spread_std_min:
+            if funnel:
+                funnel.reject_reasons['L3_spread'] = funnel.reject_reasons.get('L3_spread', 0) + 1
             return None
         
         m.volume_min = self._get_min_volume(sym_a, sym_b)
         if m.volume_min < self.layer3.volume_min:
+            if funnel:
+                funnel.reject_reasons['L3_vol'] = funnel.reject_reasons.get('L3_vol', 0) + 1
             return None
         
         m.bid_ask_max = self._get_max_bid_ask_spread(sym_a, sym_b)
         if m.bid_ask_max > self.layer3.bid_ask_max:
+            if funnel:
+                funnel.reject_reasons['L3_spread_ba'] = funnel.reject_reasons.get('L3_spread_ba', 0) + 1
             return None
+        
+        if funnel:
+            funnel.layer3_passed += 1
         
         # ========== Scoring ==========
         m.score = self._calc_score(m)
@@ -244,6 +316,8 @@ class Scanner:
         
         # 检查回测结果
         if m.pf < self.cfg.output['min_pf'] or m.total_return <= 0:
+            if funnel:
+                funnel.reject_reasons['L4_backtest'] = funnel.reject_reasons.get('L4_backtest', 0) + 1
             return None
         
         return m
