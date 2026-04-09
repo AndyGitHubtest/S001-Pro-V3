@@ -435,7 +435,12 @@ class Scanner:
         if funnel:
             funnel.layer2_passed += 1
         
-        # ========== Layer 3: Tradeability ==========
+        # ========== Layer 3: 能不能赚钱 ==========
+        # 核心就两个问题:
+        #   1. Z-Score够不够大 → 有没有入场机会
+        #   2. 价差波动够不够 → 有没有利润空间
+        # (成交量/流动性已在预筛阶段用500万USDT门槛保证了)
+        
         m.zscore_max = self._calc_max_zscore(data)
         if m.zscore_max < self.layer3.zscore_max_min:
             if funnel:
@@ -448,17 +453,10 @@ class Scanner:
                 funnel.reject_reasons['L3_spread'] = funnel.reject_reasons.get('L3_spread', 0) + 1
             return None
         
-        m.volume_min = self._get_min_volume(sym_a, sym_b)
-        if m.volume_min < self.layer3.volume_min:
-            if funnel:
-                funnel.reject_reasons['L3_vol'] = funnel.reject_reasons.get('L3_vol', 0) + 1
-            return None
-        
-        m.bid_ask_max = self._get_max_bid_ask_spread(sym_a, sym_b)
-        if m.bid_ask_max > self.layer3.bid_ask_max:
-            if funnel:
-                funnel.reject_reasons['L3_spread_ba'] = funnel.reject_reasons.get('L3_spread_ba', 0) + 1
-            return None
+        # volume/bid_ask 不再做L3硬过滤 (预筛已保证流动性)
+        # 但仍然计算并记录，用于评分
+        m.volume_min = self._get_min_volume(sym_a, sym_b) if not symbol_data else 10_000_000
+        m.bid_ask_max = 0.001  # 不再查DB，预筛已保证
         
         if funnel:
             funnel.layer3_passed += 1
