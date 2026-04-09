@@ -264,9 +264,10 @@ class WebDashboard:
             conn = self.db._get_connection()
             cursor = conn.cursor()
             
-            # 获取最后扫描记录
+            # 获取最后扫描记录 (含漏斗各层数据)
             cursor.execute("""
-                SELECT scan_time, pool, layer3_passed, duration_ms 
+                SELECT scan_time, pool, layer3_passed, duration_ms,
+                       candidates_count, layer1_passed, layer2_passed, top_n
                 FROM scan_history 
                 ORDER BY scan_time DESC 
                 LIMIT 1
@@ -296,8 +297,12 @@ class WebDashboard:
                     'last_scan_ago': self._format_ago(elapsed),
                     'next_scan_in': self._format_duration(next_scan_in),
                     'scan_interval_minutes': scan_interval / 60,
-                    'last_pairs_count': row[2],
+                    'last_pairs_count': row[7] if len(row) > 7 else row[2],
                     'last_duration_ms': row[3],
+                    'candidates_count': row[4] if len(row) > 4 else None,
+                    'layer1_passed': row[5] if len(row) > 5 else None,
+                    'layer2_passed': row[6] if len(row) > 6 else None,
+                    'layer3_passed': row[2],
                     'status': 'normal' if elapsed < scan_interval * 1.5 else 'overdue'
                 }
             else:
@@ -382,307 +387,234 @@ class WebDashboard:
             return f"{int(seconds/3600)}小时"
     
     def _render_dashboard(self) -> str:
-        """渲染主面板HTML - P0增强版"""
-        return """
-<!DOCTYPE html>
-<html>
+        """渲染主面板 — 专业暗色主题，入池配对完整详情，5秒自动刷新"""
+        return '''<!DOCTYPE html>
+<html lang="zh-CN">
 <head>
-    <title>S001-Pro V3 Dashboard</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e1a; color: #e0e0e0; padding: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #1a2332; }
-        .header h1 { color: #00d4aa; font-size: 24px; }
-        .header .subtitle { color: #888; font-size: 12px; margin-left: 10px; }
-        .status { display: flex; gap: 15px; flex-wrap: wrap; }
-        .status-item { text-align: center; min-width: 70px; }
-        .status-item .value { font-size: 20px; font-weight: bold; color: #fff; }
-        .status-item .label { font-size: 11px; color: #888; margin-top: 4px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 15px; }
-        .card { background: #111827; border-radius: 8px; padding: 15px; border: 1px solid #1a2332; }
-        .card h2 { font-size: 14px; margin-bottom: 12px; color: #00d4aa; display: flex; justify-content: space-between; }
-        .card h2 span { font-size: 11px; color: #666; }
-        .card h2 .indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-        .indicator-healthy { background: #00d4aa; }
-        .indicator-warning { background: #ff9500; }
-        .indicator-error { background: #ff4757; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        th { text-align: left; padding: 8px 4px; color: #888; font-weight: normal; border-bottom: 1px solid #1a2332; }
-        td { padding: 8px 4px; border-bottom: 1px solid #1a2332; }
-        tr:hover { background: #1a2332; }
-        .positive { color: #00d4aa; }
-        .negative { color: #ff4757; }
-        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; }
-        .badge-long { background: rgba(0, 212, 170, 0.2); color: #00d4aa; }
-        .badge-short { background: rgba(255, 71, 87, 0.2); color: #ff4757; }
-        .loading { text-align: center; padding: 30px; color: #666; }
-        .info-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a2332; font-size: 12px; }
-        .info-row:last-child { border-bottom: none; }
-        .info-label { color: #888; }
-        .info-value { color: #fff; font-weight: 500; }
-        .alert-item { padding: 8px; margin: 4px 0; border-radius: 4px; font-size: 11px; }
-        .alert-warning { background: rgba(255, 149, 0, 0.1); border-left: 3px solid #ff9500; }
-        .alert-error { background: rgba(255, 71, 87, 0.1); border-left: 3px solid #ff4757; }
-        .alert-critical { background: rgba(255, 45, 85, 0.1); border-left: 3px solid #ff2d55; }
-        .scan-status-normal { color: #00d4aa; }
-        .scan-status-overdue { color: #ff4757; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S001-Pro V3 | Statistical Arbitrage</title>
+<style>
+:root{--bg:#0b0f19;--card:#111827;--border:#1e293b;--text:#e2e8f0;--dim:#64748b;--green:#10b981;--red:#ef4444;--amber:#f59e0b;--cyan:#06b6d4;--purple:#8b5cf6;--blue:#3b82f6}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Inter','SF Pro',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px;line-height:1.5}
+.wrap{max-width:1400px;margin:0 auto;padding:16px}
+/* Header */
+.hdr{display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid var(--border);margin-bottom:16px}
+.hdr h1{font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--green),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hdr .meta{text-align:right;font-size:11px;color:var(--dim)}
+.hdr .meta .live{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:4px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+/* Summary Cards */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
+.stat .val{font-size:22px;font-weight:700;margin:4px 0}
+.stat .lbl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+/* Cards */
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px}
+.card .title{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.card .title h2{font-size:14px;font-weight:600}
+.card .title .badge{font-size:11px;background:rgba(16,185,129,.15);color:var(--green);padding:2px 8px;border-radius:12px}
+/* Table */
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{text-align:left;padding:8px 6px;color:var(--dim);font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid var(--border);position:sticky;top:0;background:var(--card)}
+tbody td{padding:7px 6px;border-bottom:1px solid rgba(30,41,59,.5)}
+tbody tr:hover{background:rgba(30,41,59,.4)}
+tbody tr:nth-child(even){background:rgba(15,23,42,.3)}
+/* Colors */
+.g{color:var(--green)}.r{color:var(--red)}.y{color:var(--amber)}.c{color:var(--cyan)}.p{color:var(--purple)}.b{color:var(--blue)}.d{color:var(--dim)}
+.tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600}
+.tag-long{background:rgba(16,185,129,.15);color:var(--green)}
+.tag-short{background:rgba(239,68,68,.15);color:var(--red)}
+/* Funnel */
+.funnel{display:flex;align-items:center;gap:4px;font-size:12px;flex-wrap:wrap}
+.funnel .stage{background:var(--border);padding:4px 10px;border-radius:6px;text-align:center;min-width:60px}
+.funnel .stage .num{font-size:16px;font-weight:700;color:#fff}
+.funnel .stage .lbl{font-size:9px;color:var(--dim)}
+.funnel .arrow{color:var(--dim);font-size:16px}
+/* Empty */
+.empty{text-align:center;padding:24px;color:var(--dim);font-size:12px}
+/* Tooltip */
+th[title]{cursor:help;border-bottom:1px dotted var(--dim)}
+/* Responsive */
+.scroll{overflow-x:auto}
+@media(max-width:768px){.stats{grid-template-columns:repeat(3,1fr)}}
+</style>
 </head>
 <body>
-    <div class="header">
-        <div>
-            <h1>📊 S001-Pro V3 <span class="subtitle" id="uptime">加载中...</span></h1>
-        </div>
-        <div class="status" id="status">
-            <div class="status-item">
-                <div class="value" id="open-positions">-</div>
-                <div class="label">持仓</div>
-            </div>
-            <div class="status-item">
-                <div class="value" id="today-pnl">-</div>
-                <div class="label">今日盈亏</div>
-            </div>
-            <div class="status-item">
-                <div class="value" id="unrealized">-</div>
-                <div class="label">未实现</div>
-            </div>
-            <div class="status-item">
-                <div class="value" id="cpu">-</div>
-                <div class="label">CPU</div>
-            </div>
-            <div class="status-item">
-                <div class="value" id="memory">-</div>
-                <div class="label">内存</div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- 新增: 系统信息行 -->
-    <div class="grid" style="margin-bottom: 15px;">
-        <div class="card">
-            <h2><span class="indicator" id="scan-indicator"></span>扫描状态 <span id="scan-time">-</span></h2>
-            <div id="scan-info">
-                <div class="info-row">
-                    <span class="info-label">上次扫描</span>
-                    <span class="info-value" id="last-scan">-</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">下次扫描</span>
-                    <span class="info-value" id="next-scan">-</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">配对数量</span>
-                    <span class="info-value" id="pairs-count">-</span>
-                </div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>🚨 系统告警 <span id="alert-count">0</span></h2>
-            <div id="alerts-container">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
-    </div>
-    
-    <div class="grid">
-        <div class="status-item">
-                <div class="value" id="unrealized">-</div>
-                <div class="label">未实现盈亏</div>
-            </div>
-        </div>
-    </div>
-    
-    <div class="grid">
-        <div class="card">
-            <h2>当前持仓 <span>实时</span></h2>
-            <div id="positions-container">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>活跃配对 <span>Top 30</span></h2>
-            <div id="pairs-container">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>最近交易</h2>
-            <div id="trades-container">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>统计指标 <span>7天</span></h2>
-            <div id="stats-container">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-        async function fetchData() {
-            try {
-                // ====== P0: 获取系统资源 ======
-                const systemRes = await fetch('/api/system');
-                const system = await systemRes.json();
-                document.getElementById('uptime').textContent = '运行' + system.uptime;
-                document.getElementById('cpu').textContent = system.cpu_percent + '%';
-                document.getElementById('memory').textContent = system.memory_mb + 'M';
-                
-                // 根据系统状态调整颜色
-                document.getElementById('cpu').className = 'value ' + (system.cpu_percent > 80 ? 'negative' : '');
-                document.getElementById('memory').className = 'value ' + (system.memory_percent > 80 ? 'negative' : '');
-                
-                // 获取状态
-                const statusRes = await fetch('/api/status');
-                const status = await statusRes.json();
-                document.getElementById('open-positions').textContent = status.open_positions;
-                document.getElementById('today-pnl').textContent = (status.today_pnl >= 0 ? '+' : '') + status.today_pnl.toFixed(2);
-                document.getElementById('today-pnl').className = 'value ' + (status.today_pnl >= 0 ? 'positive' : 'negative');
-                document.getElementById('unrealized').textContent = (status.unrealized_pnl >= 0 ? '+' : '') + status.unrealized_pnl.toFixed(2);
-                document.getElementById('unrealized').className = 'value ' + (status.unrealized_pnl >= 0 ? 'positive' : 'negative');
-                
-                // ====== P0: 获取扫描信息 ======
-                const scanRes = await fetch('/api/scan_info');
-                const scan = await scanRes.json();
-                if (scan.status === 'normal' || scan.status === 'overdue') {
-                    document.getElementById('last-scan').textContent = scan.last_scan_ago;
-                    document.getElementById('last-scan').className = 'info-value scan-status-' + scan.status;
-                    document.getElementById('next-scan').textContent = scan.next_scan_in;
-                    document.getElementById('pairs-count').textContent = scan.last_pairs_count || '-';
-                    document.getElementById('scan-indicator').className = 'indicator indicator-' + (scan.status === 'normal' ? 'healthy' : 'warning');
-                } else {
-                    document.getElementById('scan-info').innerHTML = '<div class="loading">' + (scan.message || '暂无数据') + '</div>';
-                }
-                
-                // ====== P0: 获取告警 ======
-                const alertsRes = await fetch('/api/alerts');
-                const alerts = await alertsRes.json();
-                renderAlerts(alerts);
-                
-                // 获取持仓
-                const positionsRes = await fetch('/api/positions');
-                const positions = await positionsRes.json();
-                renderPositions(positions);
-                
-                // 获取配对
-                const pairsRes = await fetch('/api/pairs');
-                const pairs = await pairsRes.json();
-                renderPairs(pairs);
-                
-                // 获取交易
-                const tradesRes = await fetch('/api/trades');
-                const trades = await tradesRes.json();
-                renderTrades(trades);
-                
-                // 获取统计
-                const statsRes = await fetch('/api/stats');
-                const stats = await statsRes.json();
-                renderStats(stats);
-                
-            } catch (error) {
-                console.error('Fetch error:', error);
-            }
-        }
-        
-        // ====== P0: 渲染告警 ======
-        function renderAlerts(alerts) {
-            const container = document.getElementById('alerts-container');
-            document.getElementById('alert-count').textContent = alerts.unread || 0;
-            
-            if (!alerts.alerts || alerts.alerts.length === 0) {
-                container.innerHTML = '<div class="loading">暂无告警</div>';
-                return;
-            }
-            
-            const html = alerts.alerts.slice(0, 5).map(a => {
-                const alertClass = 'alert-' + (a.level === 'critical' ? 'critical' : (a.level === 'error' ? 'error' : 'warning'));
-                const time = a.timestamp.split(' ')[1] || a.timestamp;
-                return '<div class="alert-item ' + alertClass + '">' +
-                    '<strong>' + time + '</strong> ' + a.message +
-                    '</div>';
-            }).join('');
-            container.innerHTML = html;
-        }
-        
-        function renderPositions(positions) {
-            const container = document.getElementById('positions-container');
-            if (positions.length === 0) {
-                container.innerHTML = '<div class="loading">暂无持仓</div>';
-                return;
-            }
-            
-            const html = '<table><thead><tr><th>配对</th><th>方向</th><th>进场Z</th><th>当前Z</th><th>盈亏</th></tr></thead><tbody>' +
-                positions.map(p => '<tr>' +
-                    '<td>' + p.pair_key + '</td>' +
-                    '<td><span class="badge badge-' + (p.direction.includes('long') ? 'long' : 'short') + '">' + p.direction + '</span></td>' +
-                    '<td>' + p.entry_z.toFixed(2) + '</td>' +
-                    '<td>' + (p.current_z ? p.current_z.toFixed(2) : '-') + '</td>' +
-                    '<td class="' + (p.unrealized_pnl >= 0 ? 'positive' : 'negative') + '">' + (p.unrealized_pnl >= 0 ? '+' : '') + p.unrealized_pnl.toFixed(2) + '</td>' +
-                '</tr>').join('') +
-                '</tbody></table>';
-            container.innerHTML = html;
-        }
-        
-        function renderPairs(pairs) {
-            const container = document.getElementById('pairs-container');
-            if (pairs.length === 0) {
-                container.innerHTML = '<div class="loading">暂无配对</div>';
-                return;
-            }
-            
-            const html = '<table><thead><tr><th>配对</th><th>评分</th><th>PF</th><th>参数</th></tr></thead><tbody>' +
-                pairs.slice(0, 10).map(p => '<tr>' +
-                    '<td>' + p.symbol_a + '-' + p.symbol_b + '</td>' +
-                    '<td>' + p.score.toFixed(3) + '</td>' +
-                    '<td>' + p.pf.toFixed(2) + '</td>' +
-                    '<td>' + p.z_entry.toFixed(1) + '/' + p.z_exit.toFixed(1) + '/' + p.z_stop.toFixed(1) + '</td>' +
-                '</tr>').join('') +
-                '</tbody></table>';
-            container.innerHTML = html;
-        }
-        
-        function renderTrades(trades) {
-            const container = document.getElementById('trades-container');
-            if (trades.length === 0) {
-                container.innerHTML = '<div class="loading">暂无交易</div>';
-                return;
-            }
-            
-            const html = '<table><thead><tr><th>配对</th><th>盈亏</th><th>原因</th></tr></thead><tbody>' +
-                trades.map(t => '<tr>' +
-                    '<td>' + t.pair_key + '</td>' +
-                    '<td class="' + (t.pnl >= 0 ? 'positive' : 'negative') + '">' + (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2) + '</td>' +
-                    '<td>' + t.exit_reason + '</td>' +
-                '</tr>').join('') +
-                '</tbody></table>';
-            container.innerHTML = html;
-        }
-        
-        function renderStats(stats) {
-            const container = document.getElementById('stats-container');
-            const html = '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">' +
-                '<div><div style="color: #888; font-size: 12px;">总交易</div><div style="font-size: 20px; font-weight: bold;">' + stats.total_trades + '</div></div>' +
-                '<div><div style="color: #888; font-size: 12px;">胜率</div><div style="font-size: 20px; font-weight: bold;">' + (stats.win_rate * 100).toFixed(1) + '%</div></div>' +
-                '<div><div style="color: #888; font-size: 12px;">盈亏比</div><div style="font-size: 20px; font-weight: bold;">' + stats.pf.toFixed(2) + '</div></div>' +
-                '<div><div style="color: #888; font-size: 12px;">总盈亏</div><div style="font-size: 20px; font-weight: bold; color: ' + (stats.total_pnl >= 0 ? '#00d4aa' : '#ff4757') + '">' + (stats.total_pnl >= 0 ? '+' : '') + stats.total_pnl.toFixed(2) + '</div></div>' +
-            '</div>';
-            container.innerHTML = html;
-        }
-        
-        // 初始加载和定时刷新
-        fetchData();
-        setInterval(fetchData, 5000);
-    </script>
+<div class="wrap">
+  <!-- Header -->
+  <div class="hdr">
+    <h1>S001-Pro V3 Statistical Arbitrage</h1>
+    <div class="meta"><span class="live"></span>LIVE<br><span id="clock">-</span></div>
+  </div>
+
+  <!-- Summary Stats -->
+  <div class="stats" id="stats-bar">
+    <div class="stat"><div class="lbl">持仓数</div><div class="val" id="s-pos">-</div></div>
+    <div class="stat"><div class="lbl">入池配对</div><div class="val c" id="s-pairs">-</div></div>
+    <div class="stat"><div class="lbl">今日盈亏</div><div class="val" id="s-pnl">-</div></div>
+    <div class="stat"><div class="lbl">未实现</div><div class="val" id="s-unreal">-</div></div>
+    <div class="stat"><div class="lbl">上次扫描</div><div class="val d" id="s-scan" style="font-size:14px">-</div></div>
+    <div class="stat"><div class="lbl">下次扫描</div><div class="val d" id="s-next" style="font-size:14px">-</div></div>
+  </div>
+
+  <!-- Funnel -->
+  <div class="card">
+    <div class="title"><h2>🔬 扫描漏斗</h2><span class="badge" id="scan-dur">-</span></div>
+    <div class="funnel" id="funnel"><div class="empty">等待首次扫描...</div></div>
+  </div>
+
+  <!-- Pairs Table -->
+  <div class="card">
+    <div class="title"><h2>🎯 入池配对</h2><span class="badge" id="pair-badge">0对</span></div>
+    <div class="scroll" id="pairs-wrap"><div class="empty">等待扫描结果...</div></div>
+  </div>
+
+  <!-- Positions -->
+  <div class="card">
+    <div class="title"><h2>📊 当前持仓</h2><span class="badge" id="pos-badge">0</span></div>
+    <div class="scroll" id="pos-wrap"><div class="empty">暂无持仓 — 等待信号触发</div></div>
+  </div>
+
+  <!-- Trades -->
+  <div class="card">
+    <div class="title"><h2>📋 交易记录</h2></div>
+    <div class="scroll" id="trades-wrap"><div class="empty">暂无交易</div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const clr = v => v >= 0 ? 'g' : 'r';
+const sign = v => (v >= 0 ? '+' : '') + v.toFixed(2);
+
+async function fetchData() {
+  try {
+    $('clock').textContent = new Date().toLocaleString('zh-CN', {hour12:false});
+
+    // === Status ===
+    const st = await (await fetch('/api/status')).json();
+    $('s-pos').textContent = st.open_positions;
+    $('s-pnl').textContent = sign(st.today_pnl);
+    $('s-pnl').className = 'val ' + clr(st.today_pnl);
+    $('s-unreal').textContent = sign(st.unrealized_pnl);
+    $('s-unreal').className = 'val ' + clr(st.unrealized_pnl);
+
+    // === Scan Info ===
+    const sc = await (await fetch('/api/scan_info')).json();
+    if (sc.last_scan) {
+      $('s-scan').textContent = sc.last_scan_ago || '-';
+      $('s-next').textContent = sc.next_scan_in || '-';
+      $('scan-dur').textContent = sc.last_duration_ms ? (sc.last_duration_ms/1000).toFixed(0) + 's' : '-';
+      // Funnel from scan_history
+      if (sc.last_pairs_count !== undefined) {
+        $('funnel').innerHTML =
+          mkStage(sc.candidates_count||'?','候选') + arr() +
+          mkStage(sc.layer1_passed||'?','L1统计') + arr() +
+          mkStage(sc.layer2_passed||'?','L2稳定') + arr() +
+          mkStage(sc.layer3_passed||'?','L3机会') + arr() +
+          mkStage(sc.last_pairs_count,'✅入池');
+      }
+    }
+
+    // === Pairs ===
+    const pairs = await (await fetch('/api/pairs?pool=primary')).json();
+    $('s-pairs').textContent = pairs.length;
+    $('pair-badge').textContent = pairs.length + '对';
+    if (pairs.length > 0) {
+      let h = '<table><thead><tr>' +
+        '<th>#</th>' +
+        '<th>配对</th>' +
+        '<th title="综合评分 0~1，越高越优质">Score</th>' +
+        '<th title="盈亏比 Profit Factor，总盈利÷总亏损，≥1.3入池">PF</th>' +
+        '<th title="夏普比率，收益÷风险，越高越稳">Sharpe</th>' +
+        '<th title="回测总收益率">Return</th>' +
+        '<th title="最大回撤">DD</th>' +
+        '<th title="Z-Score入场阈值">Z入场</th>' +
+        '<th title="Z-Score出场止盈">Z出场</th>' +
+        '<th title="Z-Score止损">Z止损</th>' +
+        '<th title="回测交易次数">N</th>' +
+        '<th title="滚动相关系数中位数，越高两币越像">Corr</th>' +
+        '<th title="半衰期(K线根数)，越小回归越快">HL</th>' +
+        '<th title="赫斯特指数，<0.5=均值回归(好)">Hurst</th>' +
+        '</tr></thead><tbody>';
+      pairs.forEach((p, i) => {
+        const pfCls = p.pf >= 2.0 ? 'g' : p.pf >= 1.5 ? 'c' : p.pf >= 1.3 ? 'y' : 'r';
+        const hurstCls = (p.hurst||0) < 0.45 ? 'g' : (p.hurst||0) < 0.55 ? 'y' : 'r';
+        h += '<tr>' +
+          '<td class="d">' + (i+1) + '</td>' +
+          '<td><b>' + p.symbol_a.replace('/USDT','') + '</b><span class="d"> / ' + p.symbol_b.replace('/USDT','') + '</span></td>' +
+          '<td><b>' + p.score.toFixed(3) + '</b></td>' +
+          '<td class="' + pfCls + '"><b>' + p.pf.toFixed(2) + '</b></td>' +
+          '<td>' + (p.sharpe||0).toFixed(2) + '</td>' +
+          '<td class="' + clr(p.total_return||0) + '">' + (p.total_return||0).toFixed(4) + '</td>' +
+          '<td class="r">' + (p.max_dd||0).toFixed(4) + '</td>' +
+          '<td class="b">' + p.z_entry.toFixed(1) + '</td>' +
+          '<td class="g">' + p.z_exit.toFixed(1) + '</td>' +
+          '<td class="r">' + (p.z_stop||0).toFixed(1) + '</td>' +
+          '<td>' + p.trades_count + '</td>' +
+          '<td>' + (p.corr_median||0).toFixed(3) + '</td>' +
+          '<td>' + (p.half_life||0).toFixed(1) + '</td>' +
+          '<td class="' + hurstCls + '">' + (p.hurst||0).toFixed(3) + '</td>' +
+          '</tr>';
+      });
+      h += '</tbody></table>';
+      $('pairs-wrap').innerHTML = h;
+    } else {
+      $('pairs-wrap').innerHTML = '<div class="empty">⏳ 等待扫描完成...</div>';
+    }
+
+    // === Positions ===
+    const pos = await (await fetch('/api/positions')).json();
+    $('pos-badge').textContent = pos.length;
+    if (pos.length > 0) {
+      let h = '<table><thead><tr><th>配对</th><th>方向</th><th>入场Z</th><th>当前Z</th><th>未实现PnL</th><th>入场时间</th></tr></thead><tbody>';
+      pos.forEach(p => {
+        const dir = p.direction.includes('long') ? '<span class="tag tag-long">LONG</span>' : '<span class="tag tag-short">SHORT</span>';
+        h += '<tr><td><b>' + p.pair_key + '</b></td>' +
+          '<td>' + dir + '</td>' +
+          '<td>' + p.entry_z.toFixed(2) + '</td>' +
+          '<td class="' + clr(p.current_z||0) + '"><b>' + (p.current_z||0).toFixed(2) + '</b></td>' +
+          '<td class="' + clr(p.unrealized_pnl||0) + '"><b>' + sign(p.unrealized_pnl||0) + '</b></td>' +
+          '<td class="d">' + (p.entry_time||'').substring(0,16) + '</td></tr>';
+      });
+      h += '</tbody></table>';
+      $('pos-wrap').innerHTML = h;
+    } else {
+      $('pos-wrap').innerHTML = '<div class="empty">暂无持仓 — 等待Z-Score触发入场信号</div>';
+    }
+
+    // === Trades ===
+    const trades = await (await fetch('/api/trades?limit=15')).json();
+    if (trades.length > 0) {
+      let h = '<table><thead><tr><th>配对</th><th>方向</th><th>PnL</th><th>PnL%</th><th>原因</th><th>入场</th><th>出场</th></tr></thead><tbody>';
+      trades.forEach(t => {
+        h += '<tr><td><b>' + t.pair_key + '</b></td>' +
+          '<td>' + (t.direction||'-') + '</td>' +
+          '<td class="' + clr(t.pnl) + '"><b>' + sign(t.pnl) + '</b></td>' +
+          '<td class="' + clr(t.pnl_pct) + '">' + t.pnl_pct.toFixed(2) + '%</td>' +
+          '<td>' + (t.exit_reason||'-') + '</td>' +
+          '<td class="d">' + (t.entry_time||'').substring(5,16) + '</td>' +
+          '<td class="d">' + (t.exit_time||'').substring(5,16) + '</td></tr>';
+      });
+      h += '</tbody></table>';
+      $('trades-wrap').innerHTML = h;
+    }
+
+  } catch(e) { console.error('Dashboard error:', e); }
+}
+
+function mkStage(num, label) {
+  return '<div class="stage"><div class="num">' + num + '</div><div class="lbl">' + label + '</div></div>';
+}
+function arr() { return '<span class="arrow">→</span>'; }
+
+fetchData();
+setInterval(fetchData, 5000);
+</script>
 </body>
-</html>
-        """
+</html>'''
 
 
 class Monitor:

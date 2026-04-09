@@ -281,19 +281,29 @@ class WebServerV2:
     
     # ========== Market API实现 ==========
     def _get_market_pairs(self, pool: str) -> list:
-        """获取配对列表"""
+        """获取配对列表 — 完整数据"""
         try:
             pairs = self.db.get_active_pairs(pool) if self.db else []
             return [{
                 "symbol_a": p.symbol_a,
                 "symbol_b": p.symbol_b,
-                "score": round(p.score, 2),
+                "score": round(p.score, 3),
                 "pf": round(p.pf, 2),
-                "z_entry": p.z_entry,
-                "z_exit": p.z_exit,
-                "trades_count": p.trades_count
+                "sharpe": round(p.sharpe, 2) if p.sharpe else 0,
+                "total_return": round(p.total_return, 4) if p.total_return else 0,
+                "max_dd": round(p.max_dd, 4) if p.max_dd else 0,
+                "z_entry": round(p.z_entry, 2),
+                "z_exit": round(p.z_exit, 2),
+                "z_stop": round(p.z_stop, 2),
+                "trades_count": p.trades_count,
+                "corr_median": round(p.corr_median, 3) if p.corr_median else 0,
+                "coint_p": round(p.coint_p, 4) if p.coint_p else 0,
+                "half_life": round(p.half_life, 1) if p.half_life else 0,
+                "hurst": round(p.hurst, 3) if p.hurst else 0,
+                "updated_at": p.updated_at,
             } for p in pairs]
         except Exception as e:
+            logger.error(f"get_market_pairs error: {e}")
             return []
     
     def _get_market_pair_detail(self, symbol_a: str, symbol_b: str) -> dict:
