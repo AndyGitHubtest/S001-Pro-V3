@@ -123,10 +123,10 @@ class Scanner:
                         "ARB/USDT", "OP/USDT", "MATIC/USDT", "LINK/USDT"]
             
             cursor = conn.cursor()
-            # 获取最近24小时有数据的币种 (Data-Core schema: ts, interval)
+            # 获取所有有数据的币种 (Data-Core schema: ts, interval)
+            # Note: 实际应用时应该检查数据新鲜度
             cursor.execute("""
                 SELECT DISTINCT symbol FROM klines 
-                WHERE ts > (strftime('%s', 'now') - 86400) * 1000
                 ORDER BY symbol
                 LIMIT 50
             """)
