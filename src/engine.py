@@ -39,41 +39,72 @@ class DataReader:
         self.cache = {}  # symbol -> {timeframe: df}
     
     def get_klines(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
-        """获取K线数据"""
+        """获取K线数据 - 从Data-Core 1m数据重采样"""
         cache_key = f"{symbol}-{timeframe}"
-        
+
         # 检查缓存
         if cache_key in self.cache:
             df = self.cache[cache_key]
             if len(df) >= limit:
                 return df.tail(limit).copy()
-        
-        # 从数据库读取 (Data-Core schema: ts, interval)
+
+        # Data-Core只存储1m数据，需要重采样
         try:
             conn = sqlite3.connect(self.cfg.database.klines_db)
+
+            # 计算需要的1m数据量 (重采样需要更多原始数据)
+            # 5m需要5x, 15m需要15x, 30m需要30x，再加一些余量
+            multiplier = {'5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240}.get(timeframe, 1)
+            required_1m = limit * multiplier * 2  # 2倍余量确保数据充足
+
             query = """
                 SELECT ts, open, high, low, close, volume
                 FROM klines
-                WHERE symbol = ? AND interval = ?
+                WHERE symbol = ? AND interval = '1m'
                 ORDER BY ts DESC
                 LIMIT ?
             """
-            df = pd.read_sql_query(query, conn, params=(symbol, timeframe, limit))
+            df = pd.read_sql_query(query, conn, params=(symbol, required_1m))
             conn.close()
-            
+
             if df.empty:
-                logger.warning(f"No data for {symbol} {timeframe}")
+                logger.warning(f"No 1m data for {symbol}")
                 return None
-            
-            # 重命名ts为timestamp保持兼容
+
+            # 转换为DataFrame并重采样
             df = df.rename(columns={'ts': 'timestamp'})
-            df = df.sort_values('timestamp')
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            df = df.sort_index()
+
+            # 如果需要重采样
+            if timeframe != '1m':
+                df = self._resample_ohlcv(df, timeframe)
+
+            df = df.reset_index()
+            df = df.tail(limit)  # 只返回需要的数量
+
             self.cache[cache_key] = df
             return df
-            
+
         except Exception as e:
             logger.error(f"Failed to read klines for {symbol}: {e}")
             return None
+
+    def _resample_ohlcv(self, df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+        """将1m数据重采样为目标周期"""
+        # 映射timeframe到pandas resample规则
+        rule = {'5m': '5T', '15m': '15T', '30m': '30T', '1h': '1H', '4h': '4H'}.get(timeframe, '1T')
+
+        resampled = df.resample(rule).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }).dropna()
+
+        return resampled
     
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """获取最新价格"""
