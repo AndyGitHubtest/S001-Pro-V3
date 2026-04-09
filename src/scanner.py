@@ -249,55 +249,86 @@ class Scanner:
         return m
     
     def _load_data(self, sym_a: str, sym_b: str, pool: str) -> Optional[pd.DataFrame]:
-        """从共享数据库加载配对历史数据"""
+        """从共享数据库加载配对历史数据，1m合成15m"""
         try:
             conn = self.db._get_klines_connection()
             if conn is None:
                 logger.warning("K线数据库未配置，无法加载数据")
                 return None
             
-            # 获取timeframe
+            # 获取timeframe (15m)
             timeframe = self.cfg.trading.primary.timeframe if pool == "primary" else self.cfg.trading.secondary.timeframe
             
-            # 查询两个币种的数据 (Data-Core schema: ts, interval)
+            # Data-Core只有1m数据，需要查询1m然后合成15m
+            # 15m需要15条1m数据，200条15m需要3000条1m
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT ts, close FROM klines 
-                WHERE symbol = ? AND interval = ?
+                SELECT ts, open, high, low, close, volume FROM klines 
+                WHERE symbol = ? AND interval = '1m'
                 ORDER BY ts DESC
-                LIMIT 1000
-            """, (sym_a, timeframe))
+                LIMIT 3000
+            """, (sym_a,))
             rows_a = cursor.fetchall()
             
             cursor.execute("""
-                SELECT ts, close FROM klines 
-                WHERE symbol = ? AND interval = ?
+                SELECT ts, open, high, low, close, volume FROM klines 
+                WHERE symbol = ? AND interval = '1m'
                 ORDER BY ts DESC
-                LIMIT 1000
-            """, (sym_b, timeframe))
+                LIMIT 3000
+            """, (sym_b,))
             rows_b = cursor.fetchall()
             
-            if len(rows_a) < 120 or len(rows_b) < 120:
-                logger.debug(f"{sym_a}-{sym_b}: 数据不足 ({len(rows_a)}/{len(rows_b)})")
+            if len(rows_a) < 1800 or len(rows_b) < 1800:  # 至少120条15m = 1800条1m
+                logger.debug(f"{sym_a}-{sym_b}: 1m数据不足 ({len(rows_a)}/{len(rows_b)})")
                 return None
             
-            # 转换为DataFrame并对齐时间戳 (ts是毫秒时间戳)
-            df_a = pd.DataFrame(rows_a, columns=['ts', 'a'])
-            df_b = pd.DataFrame(rows_b, columns=['ts', 'b'])
+            # 1m转15m
+            df_a = self._resample_1m_to_15m(rows_a)
+            df_b = self._resample_1m_to_15m(rows_b)
             
-            # 合并并取交集
-            df = pd.merge(df_a, df_b, on='ts', how='inner')
+            if df_a is None or df_b is None:
+                return None
+            
+            # 合并并对齐
+            df = pd.merge(df_a, df_b, on='ts', how='inner', suffixes=('_a', '_b'))
             df = df.sort_values('ts')
             
             if len(df) < 120:
-                logger.debug(f"{sym_a}-{sym_b}: 对齐后数据不足 ({len(df)})")
+                logger.debug(f"{sym_a}-{sym_b}: 15m对齐后不足 ({len(df)})")
                 return None
             
-            return df[['a', 'b']].astype(float)
+            return df[['close_a', 'close_b']].rename(columns={'close_a': 'a', 'close_b': 'b'}).astype(float)
             
         except Exception as e:
             logger.error(f"加载数据失败 {sym_a}-{sym_b}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
+    
+    def _resample_1m_to_15m(self, rows: list) -> Optional[pd.DataFrame]:
+        """将1m数据合成为15m"""
+        if len(rows) < 15:
+            return None
+        
+        # 转换为DataFrame
+        df = pd.DataFrame(rows, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+        df['ts'] = pd.to_datetime(df['ts'], unit='ms')
+        df = df.sort_values('ts')
+        
+        # 按15分钟分组 (floor到15分钟边界)
+        df['period'] = df['ts'].dt.floor('15min')
+        
+        # 重采样
+        resampled = df.groupby('period').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }).reset_index()
+        
+        resampled = resampled.rename(columns={'period': 'ts'})
+        return resampled
     
     def _calc_median_correlation(self, data: pd.DataFrame, window: int = 120) -> float:
         """计算滚动相关系数的中位数"""
