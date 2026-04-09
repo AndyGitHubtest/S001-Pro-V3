@@ -84,7 +84,22 @@ class Strategy:
             db_manager = DatabaseManager(self.cfg.database.state_db)
             log_info("Strategy", "数据库初始化完成", db_path=self.cfg.database.state_db)
         
-        # 3. 初始化引擎
+        # 3. 恢复遗留订单（重启后的关键步骤）
+        with trace_context("Strategy", "恢复遗留订单"):
+            from order_recovery import perform_recovery
+            recovery_report = perform_recovery(self.trader.api)
+            log_info("Strategy", "订单恢复完成",
+                    orders_found=recovery_report['orders_found'],
+                    orders_cancelled=recovery_report['orders_cancelled'],
+                    orders_recovered=recovery_report['orders_recovered'],
+                    orphan_orders=recovery_report['orphan_orders'])
+            
+            if recovery_report['manual_review_required']:
+                log_error("Strategy", "存在需要人工审核的订单",
+                         Exception("请检查恢复报告"),
+                         count=len(recovery_report['manual_review_required']))
+        
+        # 4. 初始化引擎
         with trace_context("Strategy", "初始化引擎"):
             self.engine.initialize()
             log_info("Strategy", "引擎初始化完成")
@@ -281,6 +296,14 @@ class Strategy:
         log_info("Strategy", "开始关闭流程")
         
         self.running = False
+        
+        # 保存停机快照（用于重启后恢复）
+        with trace_context("Strategy", "保存停机快照"):
+            from order_recovery import GracefulShutdownHandler
+            handler = GracefulShutdownHandler(self.db)
+            snapshot = handler.prepare_shutdown()
+            log_info("Strategy", "停机快照已保存",
+                    positions=len(snapshot['open_positions']))
         
         # 停止可视化追踪
         tracer.stop()
