@@ -13,6 +13,9 @@ import sqlite3
 
 from config import get_config
 from database import get_db, PositionRecord
+from visualization import (
+    trace_step, trace_context, log_info, log_error, heartbeat
+)
 
 logger = logging.getLogger(__name__)
 
@@ -359,28 +362,42 @@ class Engine:
         self.position_mgr.load_positions()
         logger.info("Engine initialized")
     
+    @trace_step("Engine", "处理Tick")
     def process_tick(self, pool: str = "primary"):
         """处理一个tick"""
+        heartbeat("Engine")
+        
         # 获取活跃配对
         from database import get_db
         db = get_db()
         pairs = db.get_active_pairs(pool)
         
+        log_info("Engine", "开始处理Tick", pool=pool, pair_count=len(pairs))
+        
+        processed = 0
         for pair in pairs:
             pair_key = f"{pair.symbol_a}-{pair.symbol_b}"
             
-            # 读取数据
-            tf = self.cfg.trading.primary.timeframe if pool == 'primary' else self.cfg.trading.secondary.timeframe
-            data = self.data_reader.get_klines(pair.symbol_a, tf, 200)
-            
-            if data is None or len(data) < 120:
-                continue
-            
-            # 检查持仓
-            if self.position_mgr.has_position(pair_key):
-                self._manage_position(pair_key, pair, data)
-            else:
-                self._check_entry(pair_key, pair, data, pool)
+            with trace_context("Engine", f"处理配对", pair_key=pair_key):
+                # 读取数据
+                tf = self.cfg.trading.primary.timeframe if pool == 'primary' else self.cfg.trading.secondary.timeframe
+                data = self.data_reader.get_klines(pair.symbol_a, tf, 200)
+                
+                if data is None or len(data) < 120:
+                    log_info("Engine", "数据不足跳过", 
+                            pair_key=pair_key, 
+                            data_len=len(data) if data is not None else 0)
+                    continue
+                
+                # 检查持仓
+                if self.position_mgr.has_position(pair_key):
+                    self._manage_position(pair_key, pair, data)
+                else:
+                    self._check_entry(pair_key, pair, data, pool)
+                
+                processed += 1
+        
+        log_info("Engine", "Tick处理完成", pool=pool, processed=processed)
     
     def _manage_position(self, pair_key: str, pair: 'PairRecord', data: pd.DataFrame):
         """管理现有持仓"""

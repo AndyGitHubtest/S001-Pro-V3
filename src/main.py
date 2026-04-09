@@ -17,6 +17,10 @@ from scanner import Scanner
 from engine import Engine
 from trader import Trader
 from monitor import Monitor
+from visualization import (
+    tracer, trace_step, trace_context, TracedThread,
+    safe_thread_wrapper, log_info, log_error, heartbeat
+)
 
 # 配置日志
 logging.basicConfig(
@@ -28,6 +32,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# 启动可视化追踪
+tracer.start()
 
 
 class Strategy:
@@ -51,6 +58,7 @@ class Strategy:
             'start_time': None
         }
     
+    @trace_step("Strategy", "初始化")
     def initialize(self):
         """初始化策略"""
         logger.info(f"=" * 60)
@@ -58,47 +66,65 @@ class Strategy:
         logger.info(f"Version: {self.cfg.version}")
         logger.info(f"=" * 60)
         
+        # 注册主模块心跳
+        tracer.register_heartbeat("Strategy")
+        
         # 1. 验证配置
+        log_info("Strategy", "验证配置")
         errors = self.cfg.validate()
         if errors:
-            logger.error("Configuration errors:")
+            log_error("Strategy", "配置验证失败", Exception(str(errors)))
             for e in errors:
                 logger.error(f"  - {e}")
             sys.exit(1)
+        log_info("Strategy", "配置验证通过", error_count=0)
         
         # 2. 初始化数据库
-        logger.info("Initializing database...")
-        db_manager = DatabaseManager(self.cfg.database.state_db)
+        with trace_context("Strategy", "初始化数据库"):
+            db_manager = DatabaseManager(self.cfg.database.state_db)
+            log_info("Strategy", "数据库初始化完成", db_path=self.cfg.database.state_db)
         
         # 3. 初始化引擎
-        logger.info("Initializing engine...")
-        self.engine.initialize()
+        with trace_context("Strategy", "初始化引擎"):
+            self.engine.initialize()
+            log_info("Strategy", "引擎初始化完成")
         
         # 4. 同步持仓
-        logger.info("Syncing positions with exchange...")
-        sync_result = self.trader.sync_positions()
-        if not sync_result['synced']:
-            logger.warning(f"Position discrepancies found: {len(sync_result['discrepancies'])}")
-            for d in sync_result['discrepancies']:
-                logger.warning(f"  - {d}")
+        with trace_context("Strategy", "同步持仓"):
+            sync_result = self.trader.sync_positions()
+            log_info("Strategy", "持仓同步完成", 
+                    synced=sync_result['synced'], 
+                    discrepancies=len(sync_result['discrepancies']))
+            if not sync_result['synced']:
+                for d in sync_result['discrepancies']:
+                    logger.warning(f"  - {d}")
         
         # 5. 执行首次扫描
-        logger.info("Running initial scan...")
-        self._run_scan()
+        with trace_context("Strategy", "首次扫描"):
+            self._run_scan()
         
         self.stats['start_time'] = datetime.now()
+        log_info("Strategy", "初始化完成", 
+                start_time=self.stats['start_time'].isoformat())
         logger.info("Initialization completed successfully")
     
+    @trace_step("Strategy", "执行扫描")
     def _run_scan(self):
         """执行扫描"""
+        log_info("Strategy", "开始扫描", pools=["primary", "secondary"])
+        
         try:
             # 扫描主池
-            primary_pairs = self.scanner.scan("primary")
-            logger.info(f"Primary pool: {len(primary_pairs)} pairs")
+            with trace_context("Strategy", "扫描主池"):
+                primary_pairs = self.scanner.scan("primary")
+                log_info("Strategy", "主池扫描完成", pair_count=len(primary_pairs))
+                logger.info(f"Primary pool: {len(primary_pairs)} pairs")
             
             # 扫描次池
-            secondary_pairs = self.scanner.scan("secondary")
-            logger.info(f"Secondary pool: {len(secondary_pairs)} pairs")
+            with trace_context("Strategy", "扫描次池"):
+                secondary_pairs = self.scanner.scan("secondary")
+                log_info("Strategy", "次池扫描完成", pair_count=len(secondary_pairs))
+                logger.info(f"Secondary pool: {len(secondary_pairs)} pairs")
             
             # 发送通知
             self.monitor.notify_event('scan_completed', {
@@ -107,44 +133,85 @@ class Strategy:
                 'timestamp': datetime.now().isoformat()
             })
             
+            log_info("Strategy", "扫描全部完成", 
+                    total_pairs=len(primary_pairs) + len(secondary_pairs))
+            
         except Exception as e:
+            log_error("Strategy", "扫描失败", e)
             logger.error(f"Scan failed: {e}")
             self.monitor.notify_event('error', {
                 'type': 'scan_failed',
                 'message': str(e)
             })
     
-    def _trading_loop(self):
-        """交易主循环"""
-        logger.info("Starting trading loop...")
+    @safe_thread_wrapper("Strategy")
+    def _trading_loop_iteration(self, last_scan_time_ref: list, scan_interval: int):
+        """单次交易循环迭代"""
+        loop_start = time.time()
         
-        last_scan_time = time.time()
+        # 更新心跳
+        heartbeat("Strategy")
+        
+        # 1. 检查是否需要重新扫描
+        if time.time() - last_scan_time_ref[0] > scan_interval:
+            log_info("Strategy", "触发定时扫描")
+            self._run_scan()
+            last_scan_time_ref[0] = time.time()
+        
+        # 2. 处理主池
+        with trace_context("Strategy", "处理主池Tick"):
+            self.engine.process_tick("primary")
+        
+        # 3. 处理次池 (每5个tick处理一次)
+        if self.stats['ticks'] % 5 == 0:
+            with trace_context("Strategy", "处理次池Tick"):
+                self.engine.process_tick("secondary")
+        
+        # 4. 更新统计
+        self.stats['ticks'] += 1
+        
+        # 5. 计算循环耗时
+        loop_duration = time.time() - loop_start
+        
+        return loop_duration
+    
+    def _trading_loop(self):
+        """交易主循环 - 带错误隔离"""
+        logger.info("Starting trading loop...")
+        tracer.register_heartbeat("TradingLoop")
+        
+        last_scan_time = [time.time()]  # 使用list以便在迭代中修改
         scan_interval = 3600  # 每小时扫描一次
+        consecutive_errors = 0
+        max_consecutive_errors = 10
         
         while self.running:
             try:
-                loop_start = time.time()
+                # 使用安全包装器执行单次迭代
+                loop_duration = self._trading_loop_iteration(last_scan_time, scan_interval)
                 
-                # 1. 检查是否需要重新扫描
-                if time.time() - last_scan_time > scan_interval:
-                    logger.info("Scheduled scan triggered")
-                    self._run_scan()
-                    last_scan_time = time.time()
+                if loop_duration is None:
+                    # 迭代失败
+                    consecutive_errors += 1
+                    log_error("Strategy", "交易循环迭代失败", 
+                             Exception(f"连续错误 {consecutive_errors}/{max_consecutive_errors}"))
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.critical("连续错误过多，停止策略")
+                        self.monitor.notify_event('error', {
+                            'type': 'too_many_errors',
+                            'message': f'连续{consecutive_errors}次迭代失败'
+                        })
+                        break
+                    
+                    time.sleep(5)
+                    continue
                 
-                # 2. 处理主池
-                self.engine.process_tick("primary")
+                # 成功，重置错误计数
+                consecutive_errors = 0
                 
-                # 3. 处理次池 (每5个tick处理一次)
-                if self.stats['ticks'] % 5 == 0:
-                    self.engine.process_tick("secondary")
-                
-                # 4. 更新统计
-                self.stats['ticks'] += 1
-                
-                # 5. 计算循环耗时，动态调整sleep
-                loop_duration = time.time() - loop_start
+                # 动态调整sleep
                 sleep_time = max(0, self.cfg.trading.loop_interval - loop_duration)
-                
                 if sleep_time > 0:
                     time.sleep(sleep_time)
                 
@@ -153,6 +220,8 @@ class Strategy:
                     self._print_status()
                     
             except Exception as e:
+                # 最终防线：捕获所有异常
+                log_error("Strategy", "交易循环异常", e)
                 logger.error(f"Error in trading loop: {e}", exc_info=True)
                 self.monitor.notify_event('error', {
                     'type': 'trading_loop_error',
@@ -160,6 +229,7 @@ class Strategy:
                 })
                 time.sleep(5)  # 错误后等待5秒继续
     
+    @trace_step("Strategy", "打印状态")
     def _print_status(self):
         """打印状态"""
         positions = self.engine.position_mgr.get_all_positions()
@@ -168,9 +238,17 @@ class Strategy:
         
         unrealized = sum(p.unrealized_pnl or 0 for p in positions)
         
-        logger.info(f"Status | Ticks: {self.stats['ticks']} | "
-                   f"Positions: {len(positions)} (P:{primary_count} S:{secondary_count}) | "
-                   f"Unrealized: {unrealized:+.2f} USDT")
+        status_msg = f"Status | Ticks: {self.stats['ticks']} | "
+        status_msg += f"Positions: {len(positions)} (P:{primary_count} S:{secondary_count}) | "
+        status_msg += f"Unrealized: {unrealized:+.2f} USDT"
+        
+        logger.info(status_msg)
+        log_info("Strategy", "状态报告", 
+                ticks=self.stats['ticks'],
+                total_positions=len(positions),
+                primary=primary_count,
+                secondary=secondary_count,
+                unrealized=round(unrealized, 2))
     
     def _start_web_server(self):
         """启动Web服务器 (在独立线程)"""
@@ -196,22 +274,30 @@ class Strategy:
         finally:
             self.shutdown()
     
+    @trace_step("Strategy", "优雅关闭")
     def shutdown(self):
         """优雅关闭"""
         logger.info("Shutting down strategy...")
+        log_info("Strategy", "开始关闭流程")
+        
         self.running = False
         
-        # 保存状态
-        logger.info("Saving state...")
-        # 数据库会自动保存，这里可以添加额外的清理
+        # 停止可视化追踪
+        tracer.stop()
         
         # 打印最终统计
         duration = datetime.now() - self.stats['start_time'] if self.stats['start_time'] else None
+        
+        log_info("Strategy", "最终统计", 
+                total_ticks=self.stats['ticks'],
+                runtime=str(duration) if duration else "N/A")
+        
         logger.info(f"Strategy stopped. Total ticks: {self.stats['ticks']}")
         if duration:
             logger.info(f"Runtime: {duration}")
         
         logger.info("Shutdown completed")
+        log_info("Strategy", "关闭完成")
 
 
 def signal_handler(signum, frame):

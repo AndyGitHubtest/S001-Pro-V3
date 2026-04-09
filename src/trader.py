@@ -12,6 +12,9 @@ import time
 
 from config import get_config
 from database import get_db, PositionRecord, TradeRecord
+from visualization import (
+    trace_step, trace_context, log_info, log_error, heartbeat
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,62 +179,84 @@ class Trader:
         self.api = ExchangeAPI()
         self.db = get_db()
     
+    @trace_step("Trader", "执行开仓")
     def execute_entry(self, pos: PositionRecord) -> bool:
         """
         执行开仓 - 双边同步下单
         返回: 是否成功
         """
-        logger.info(f"Executing entry for {pos.pair_key}")
+        heartbeat("Trader")
+        log_info("Trader", "开始开仓", 
+                pair_key=pos.pair_key,
+                direction=pos.direction,
+                notional=pos.notional)
         
         # 确定下单方向
         if pos.direction == 'long_spread':
-            # 做多价差: 买A，卖B
-            side_a = 'buy'
-            side_b = 'sell'
+            side_a, side_b = 'buy', 'sell'
         else:
-            # 做空价差: 卖A，买B
-            side_a = 'sell'
-            side_b = 'buy'
+            side_a, side_b = 'sell', 'buy'
         
-        # 获取当前价格
-        ticker_a = self.api.get_ticker(pos.symbol_a)
-        ticker_b = self.api.get_ticker(pos.symbol_b)
-        
-        if not ticker_a or not ticker_b:
-            logger.error("Failed to get tickers")
-            return False
+        with trace_context("Trader", "获取行情"):
+            ticker_a = self.api.get_ticker(pos.symbol_a)
+            ticker_b = self.api.get_ticker(pos.symbol_b)
+            
+            if not ticker_a or not ticker_b:
+                log_error("Trader", "获取行情失败", Exception("Ticker is None"))
+                return False
+            
+            log_info("Trader", "行情获取成功",
+                    price_a=ticker_a['last'],
+                    price_b=ticker_b['last'])
         
         # 下第一边订单
-        result_a = self.api.place_market_order(
-            symbol=pos.symbol_a,
-            side=side_a,
-            amount=pos.qty_a
-        )
-        
-        if not result_a.success:
-            logger.error(f"Failed to place order for {pos.symbol_a}: {result_a.error}")
-            return False
+        with trace_context("Trader", "下第一边订单"):
+            result_a = self.api.place_market_order(
+                symbol=pos.symbol_a,
+                side=side_a,
+                amount=pos.qty_a
+            )
+            
+            if not result_a.success:
+                log_error("Trader", "第一边订单失败", 
+                         Exception(result_a.error or "Unknown"),
+                         symbol=pos.symbol_a)
+                return False
+            
+            log_info("Trader", "第一边订单成功",
+                    symbol=pos.symbol_a,
+                    order_id=result_a.order_id,
+                    executed_price=result_a.executed_price)
         
         # 下第二边订单
-        result_b = self.api.place_market_order(
-            symbol=pos.symbol_b,
-            side=side_b,
-            amount=pos.qty_b
-        )
-        
-        if not result_b.success:
-            logger.error(f"Failed to place order for {pos.symbol_b}: {result_b.error}")
-            # 尝试回滚第一边
-            self._rollback(pos.symbol_a, side_a, pos.qty_a)
-            return False
+        with trace_context("Trader", "下第二边订单"):
+            result_b = self.api.place_market_order(
+                symbol=pos.symbol_b,
+                side=side_b,
+                amount=pos.qty_b
+            )
+            
+            if not result_b.success:
+                log_error("Trader", "第二边订单失败",
+                         Exception(result_b.error or "Unknown"),
+                         symbol=pos.symbol_b)
+                # 回滚第一边
+                self._rollback(pos.symbol_a, side_a, pos.qty_a)
+                return False
+            
+            log_info("Trader", "第二边订单成功",
+                    symbol=pos.symbol_b,
+                    order_id=result_b.order_id,
+                    executed_price=result_b.executed_price)
         
         # 确认成交
-        time.sleep(0.5)  # 等待成交
+        time.sleep(0.5)
         
-        # 更新持仓的实际成交价格
+        # 更新成交价格
         pos.entry_price_a = result_a.executed_price
         pos.entry_price_b = result_b.executed_price
         
+        log_info("Trader", "开仓完成", pair_key=pos.pair_key)
         logger.info(f"Entry executed successfully: {pos.pair_key}")
         return True
     
