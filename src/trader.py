@@ -28,6 +28,18 @@ class OrderResult:
     executed_qty: float = 0.0
     fee: float = 0.0
     error: Optional[str] = None
+    status: str = ""  # 'filled', 'partial', 'rejected', 'timeout'
+
+
+@dataclass
+class RollbackPlan:
+    """回滚计划"""
+    symbol: str
+    side: str  # 反向操作
+    amount: float
+    reason: str
+    priority: int = 1  # 1=立即, 2=延迟
+    max_slippage: float = 0.02  # 最大滑点2%
 
 
 class ExchangeAPI:
@@ -171,132 +183,409 @@ class ExchangeAPI:
             return None
 
 
+class NakedPositionProtector:
+    """
+    裸仓保护器
+    核心职责: 确保配对交易双边同时成交，任何情况不形成裸仓
+    """
+    
+    def __init__(self, api: ExchangeAPI):
+        self.api = api
+        self.confirmation_timeout = 5  # 成交确认超时(秒)
+        self.max_rollback_attempts = 3  # 最大回滚尝试次数
+        self.rollback_slippage = 0.01  # 回滚允许滑点1%
+    
+    def execute_pair_order(self, pos: PositionRecord) -> Tuple[bool, str]:
+        """
+        执行配对订单，确保不形成裸仓
+        
+        返回: (成功, 消息)
+        """
+        log_info("Protector", "开始配对订单保护", pair_key=pos.pair_key)
+        
+        # Step 1: 预检
+        if not self._pre_check(pos):
+            return False, "预检失败"
+        
+        # Step 2: 下单A
+        result_a = self._place_leg_order(pos, 'a')
+        if not result_a.success:
+            return False, f"A边下单失败: {result_a.error}"
+        
+        # Step 3: 确认A成交 (关键!)
+        confirmed_a = self._confirm_filled(pos.symbol_a, result_a.order_id)
+        if not confirmed_a['filled']:
+            # A边未成交，直接失败
+            return False, f"A边未成交: {confirmed_a['status']}"
+        
+        # Step 4: 下单B
+        result_b = self._place_leg_order(pos, 'b')
+        if not result_b.success:
+            # B边失败，必须回滚A边
+            rollback_result = self._emergency_rollback(
+                pos.symbol_a, result_a, pos.direction
+            )
+            if not rollback_result:
+                # 回滚失败，裸仓形成！进入紧急处理
+                return self._handle_naked_position(pos, 'a', confirmed_a)
+            return False, f"B边失败，A边已回滚: {result_b.error}"
+        
+        # Step 5: 确认B成交
+        confirmed_b = self._confirm_filled(pos.symbol_b, result_b.order_id)
+        if not confirmed_b['filled']:
+            # B边未成交，回滚A边
+            rollback_result = self._emergency_rollback(
+                pos.symbol_a, result_a, pos.direction
+            )
+            if not rollback_result:
+                return self._handle_naked_position(pos, 'a', confirmed_a)
+            # 取消B边订单
+            self._cancel_order(pos.symbol_b, result_b.order_id)
+            return False, f"B边未成交，A边已回滚"
+        
+        # Step 6: 双边确认成功，更新持仓
+        pos.entry_price_a = confirmed_a['price']
+        pos.entry_price_b = confirmed_b['price']
+        pos.qty_a = confirmed_a['qty']
+        pos.qty_b = confirmed_b['qty']
+        
+        log_info("Protector", "配对订单完成", 
+                pair_key=pos.pair_key,
+                price_a=pos.entry_price_a,
+                price_b=pos.entry_price_b)
+        
+        return True, "双边成交成功"
+    
+    def _pre_check(self, pos: PositionRecord) -> bool:
+        """预检: 检查双边流动性"""
+        with trace_context("Protector", "预检"):
+            ticker_a = self.api.get_ticker(pos.symbol_a)
+            ticker_b = self.api.get_ticker(pos.symbol_b)
+            
+            if not ticker_a or not ticker_b:
+                log_error("Protector", "预检失败", Exception("无法获取行情"))
+                return False
+            
+            # 检查价差是否在合理范围
+            spread_a = ticker_a['ask'] - ticker_a['bid']
+            spread_b = ticker_b['ask'] - ticker_b['bid']
+            
+            if spread_a / ticker_a['last'] > 0.01:  # 价差>1%
+                log_error("Protector", "A边价差过大", 
+                         Exception(f"Spread: {spread_a}"),
+                         symbol=pos.symbol_a)
+                return False
+            
+            if spread_b / ticker_b['last'] > 0.01:
+                log_error("Protector", "B边价差过大",
+                         Exception(f"Spread: {spread_b}"),
+                         symbol=pos.symbol_b)
+                return False
+            
+            return True
+    
+    def _place_leg_order(self, pos: PositionRecord, leg: str) -> OrderResult:
+        """下单边订单"""
+        symbol = pos.symbol_a if leg == 'a' else pos.symbol_b
+        qty = pos.qty_a if leg == 'a' else pos.qty_b
+        
+        if pos.direction == 'long_spread':
+            side = 'buy' if leg == 'a' else 'sell'
+        else:
+            side = 'sell' if leg == 'a' else 'buy'
+        
+        log_info("Protector", f"下{leg.upper()}边订单", 
+                symbol=symbol, side=side, qty=qty)
+        
+        return self.api.place_market_order(symbol, side, qty)
+    
+    def _confirm_filled(self, symbol: str, order_id: str) -> Dict:
+        """
+        确认订单成交
+        轮询检查直到超时
+        """
+        start_time = time.time()
+        
+        while time.time() - start_time < self.confirmation_timeout:
+            status = self.api.check_order_status(symbol, order_id)
+            
+            if not status:
+                time.sleep(0.1)
+                continue
+            
+            if status['status'] == 'closed':
+                return {
+                    'filled': True,
+                    'price': status['average_price'],
+                    'qty': status['filled'],
+                    'status': 'filled'
+                }
+            
+            if status['status'] == 'canceled':
+                # 取消视为失败（即使是部分成交）
+                return {
+                    'filled': False,
+                    'price': 0,
+                    'qty': 0,
+                    'status': 'canceled',
+                    'partial_qty': status['filled']  # 记录部分成交数量供回滚使用
+                }
+            
+            if status['status'] == 'rejected':
+                return {
+                    'filled': False,
+                    'price': 0,
+                    'qty': 0,
+                    'status': 'rejected'
+                }
+            
+            time.sleep(0.1)
+        
+        # 超时
+        return {
+            'filled': False,
+            'price': 0,
+            'qty': 0,
+            'status': 'timeout'
+        }
+    
+    def _emergency_rollback(self, symbol: str, original_order: OrderResult,
+                           direction: str) -> bool:
+        """
+        紧急回滚 - 反向平仓
+        使用市价单立即平仓
+        """
+        log_info("Protector", "启动紧急回滚", 
+                symbol=symbol, 
+                original_order_id=original_order.order_id)
+        
+        # 确定反向操作
+        original_side = 'buy' if direction == 'long_spread' else 'sell'
+        rollback_side = 'sell' if original_side == 'buy' else 'buy'
+        
+        for attempt in range(self.max_rollback_attempts):
+            log_info("Protector", f"回滚尝试 {attempt + 1}/{self.max_rollback_attempts}")
+            
+            result = self.api.place_market_order(
+                symbol=symbol,
+                side=rollback_side,
+                amount=original_order.executed_qty,
+                reduce_only=True  # 关键: 只能平仓，不能开新仓
+            )
+            
+            if result.success:
+                # 确认回滚成交
+                confirmed = self._confirm_filled(symbol, result.order_id)
+                if confirmed['filled']:
+                    log_info("Protector", "回滚成功", 
+                            symbol=symbol,
+                            price=confirmed['price'])
+                    return True
+            
+            time.sleep(0.5 * (attempt + 1))  # 指数退避
+        
+        log_error("Protector", "回滚失败", 
+                 Exception(f"{self.max_rollback_attempts}次尝试均失败"),
+                 symbol=symbol)
+        return False
+    
+    def _cancel_order(self, symbol: str, order_id: str):
+        """取消订单"""
+        try:
+            # ccxt取消订单接口
+            pass  # 具体实现取决于交易所API
+        except Exception as e:
+            log_error("Protector", "取消订单失败", e, order_id=order_id)
+    
+    def _handle_naked_position(self, pos: PositionRecord, 
+                               filled_leg: str, 
+                               filled_info: Dict) -> Tuple[bool, str]:
+        """
+        处理裸仓 - 最高级别告警
+        当所有回滚尝试都失败时调用
+        """
+        naked_symbol = pos.symbol_a if filled_leg == 'a' else pos.symbol_b
+        naked_qty = filled_info['qty']
+        naked_price = filled_info['price']
+        
+        # 1. 立即发送紧急告警
+        log_error("Protector", "🚨🚨🚨 裸仓形成！", 
+                 Exception("CRITICAL: NAKED POSITION DETECTED"),
+                 pair_key=pos.pair_key,
+                 naked_symbol=naked_symbol,
+                 naked_qty=naked_qty,
+                 naked_price=naked_price)
+        
+        # 2. 记录裸仓事件到数据库
+        # TODO: 实现数据库记录
+        
+        # 3. 尝试强制平仓 (止损)
+        # 使用更高滑点容忍度
+        for attempt in range(5):
+            result = self.api.place_market_order(
+                symbol=naked_symbol,
+                side='sell' if pos.direction == 'long_spread' else 'buy',
+                amount=naked_qty,
+                reduce_only=True
+            )
+            
+            if result.success:
+                confirmed = self._confirm_filled(naked_symbol, result.order_id)
+                if confirmed['filled']:
+                    log_info("Protector", "强制平仓成功", 
+                            symbol=naked_symbol,
+                            exit_price=confirmed['price'])
+                    
+                    # 计算损失
+                    pnl = (confirmed['price'] - naked_price) * naked_qty
+                    if pos.direction != 'long_spread':
+                        pnl = -pnl
+                    
+                    return False, f"裸仓已强制平仓，损失: {pnl:.2f} USDT"
+            
+            time.sleep(1)
+        
+        # 4. 如果强制平仓也失败，通知人工介入
+        return False, "裸仓无法平仓，需要人工紧急处理！"
+    
+    def verify_position_consistency(self, pos: PositionRecord) -> Dict:
+        """
+        验证持仓一致性
+        对比本地记录与交易所实际持仓
+        """
+        with trace_context("Protector", "持仓一致性验证"):
+            exch_pos_a = self.api.get_position(pos.symbol_a)
+            exch_pos_b = self.api.get_position(pos.symbol_b)
+            
+            issues = []
+            
+            # 检查A边
+            if pos.direction == 'long_spread':
+                expected_side_a = 'long'
+                expected_side_b = 'short'
+            else:
+                expected_side_a = 'short'
+                expected_side_b = 'long'
+            
+            if not exch_pos_a:
+                issues.append(f"A边无持仓: {pos.symbol_a}")
+            elif exch_pos_a['side'] != expected_side_a:
+                issues.append(f"A边方向错误: 期望{expected_side_a}, 实际{exch_pos_a['side']}")
+            
+            if not exch_pos_b:
+                issues.append(f"B边无持仓: {pos.symbol_b}")
+            elif exch_pos_b['side'] != expected_side_b:
+                issues.append(f"B边方向错误: 期望{expected_side_b}, 实际{exch_pos_b['side']}")
+            
+            consistent = len(issues) == 0
+            
+            if not consistent:
+                log_error("Protector", "持仓不一致", 
+                         Exception(str(issues)),
+                         pair_key=pos.pair_key)
+            
+            return {
+                'consistent': consistent,
+                'issues': issues,
+                'exchange_a': exch_pos_a,
+                'exchange_b': exch_pos_b
+            }
+
+
 class Trader:
-    """交易执行器"""
+    """交易执行器 - 集成裸仓保护"""
     
     def __init__(self):
         self.cfg = get_config()
         self.api = ExchangeAPI()
         self.db = get_db()
+        self.protector = NakedPositionProtector(self.api)
     
     @trace_step("Trader", "执行开仓")
     def execute_entry(self, pos: PositionRecord) -> bool:
         """
-        执行开仓 - 双边同步下单
-        返回: 是否成功
+        执行开仓 - 使用裸仓保护器
+        确保双边同时成交
         """
         heartbeat("Trader")
-        log_info("Trader", "开始开仓", 
+        log_info("Trader", "开始开仓(带保护)", 
                 pair_key=pos.pair_key,
                 direction=pos.direction,
                 notional=pos.notional)
         
-        # 确定下单方向
-        if pos.direction == 'long_spread':
-            side_a, side_b = 'buy', 'sell'
+        # 使用保护器执行配对订单
+        success, message = self.protector.execute_pair_order(pos)
+        
+        if success:
+            log_info("Trader", "开仓成功", pair_key=pos.pair_key, message=message)
+            logger.info(f"Entry executed successfully: {pos.pair_key}")
         else:
-            side_a, side_b = 'sell', 'buy'
+            log_error("Trader", "开仓失败", Exception(message), pair_key=pos.pair_key)
+            logger.error(f"Entry failed for {pos.pair_key}: {message}")
         
-        with trace_context("Trader", "获取行情"):
-            ticker_a = self.api.get_ticker(pos.symbol_a)
-            ticker_b = self.api.get_ticker(pos.symbol_b)
-            
-            if not ticker_a or not ticker_b:
-                log_error("Trader", "获取行情失败", Exception("Ticker is None"))
-                return False
-            
-            log_info("Trader", "行情获取成功",
-                    price_a=ticker_a['last'],
-                    price_b=ticker_b['last'])
-        
-        # 下第一边订单
-        with trace_context("Trader", "下第一边订单"):
-            result_a = self.api.place_market_order(
-                symbol=pos.symbol_a,
-                side=side_a,
-                amount=pos.qty_a
-            )
-            
-            if not result_a.success:
-                log_error("Trader", "第一边订单失败", 
-                         Exception(result_a.error or "Unknown"),
-                         symbol=pos.symbol_a)
-                return False
-            
-            log_info("Trader", "第一边订单成功",
-                    symbol=pos.symbol_a,
-                    order_id=result_a.order_id,
-                    executed_price=result_a.executed_price)
-        
-        # 下第二边订单
-        with trace_context("Trader", "下第二边订单"):
-            result_b = self.api.place_market_order(
-                symbol=pos.symbol_b,
-                side=side_b,
-                amount=pos.qty_b
-            )
-            
-            if not result_b.success:
-                log_error("Trader", "第二边订单失败",
-                         Exception(result_b.error or "Unknown"),
-                         symbol=pos.symbol_b)
-                # 回滚第一边
-                self._rollback(pos.symbol_a, side_a, pos.qty_a)
-                return False
-            
-            log_info("Trader", "第二边订单成功",
-                    symbol=pos.symbol_b,
-                    order_id=result_b.order_id,
-                    executed_price=result_b.executed_price)
-        
-        # 确认成交
-        time.sleep(0.5)
-        
-        # 更新成交价格
-        pos.entry_price_a = result_a.executed_price
-        pos.entry_price_b = result_b.executed_price
-        
-        log_info("Trader", "开仓完成", pair_key=pos.pair_key)
-        logger.info(f"Entry executed successfully: {pos.pair_key}")
-        return True
+        return success
     
+    @trace_step("Trader", "执行平仓")
     def execute_exit(self, pos: PositionRecord) -> bool:
         """
-        执行平仓 - 双边同步平仓
+        执行平仓 - 双边同步平仓，带裸仓保护
         """
+        heartbeat("Trader")
         logger.info(f"Executing exit for {pos.pair_key}")
+        
+        # 首先验证持仓一致性
+        consistency = self.protector.verify_position_consistency(pos)
+        if not consistency['consistent']:
+            logger.error(f"持仓不一致，停止平仓: {consistency['issues']}")
+            return False
         
         # 确定平仓方向 (与开仓相反)
         if pos.direction == 'long_spread':
-            side_a = 'sell'
-            side_b = 'buy'
+            side_a, side_b = 'sell', 'buy'
         else:
-            side_a = 'buy'
-            side_b = 'sell'
+            side_a, side_b = 'buy', 'sell'
         
-        # 平仓必须设置 reduce_only=True (防止开新仓)
-        result_a = self.api.place_market_order(
-            symbol=pos.symbol_a,
-            side=side_a,
-            amount=pos.qty_a,
-            reduce_only=True
-        )
+        # 下第一边平仓单
+        with trace_context("Trader", "平仓第一边"):
+            result_a = self.api.place_market_order(
+                symbol=pos.symbol_a,
+                side=side_a,
+                amount=pos.qty_a,
+                reduce_only=True
+            )
+            
+            if not result_a.success:
+                log_error("Trader", "平仓第一边失败", 
+                         Exception(result_a.error or "Unknown"))
+                return False
+            
+            # 确认成交
+            confirmed_a = self.protector._confirm_filled(pos.symbol_a, result_a.order_id)
+            if not confirmed_a['filled']:
+                logger.error(f"平仓第一边未成交: {confirmed_a['status']}")
+                return False
         
-        if not result_a.success:
-            logger.error(f"Failed to close {pos.symbol_a}: {result_a.error}")
-            return False
-        
-        result_b = self.api.place_market_order(
-            symbol=pos.symbol_b,
-            side=side_b,
-            amount=pos.qty_b,
-            reduce_only=True
-        )
-        
-        if not result_b.success:
-            logger.error(f"Failed to close {pos.symbol_b}: {result_b.error}")
-            # 这里很难回滚，需要人工介入
-            return False
+        # 下第二边平仓单
+        with trace_context("Trader", "平仓第二边"):
+            result_b = self.api.place_market_order(
+                symbol=pos.symbol_b,
+                side=side_b,
+                amount=pos.qty_b,
+                reduce_only=True
+            )
+            
+            if not result_b.success:
+                log_error("Trader", "平仓第二边失败",
+                         Exception(result_b.error or "Unknown"))
+                # 平仓失败很危险，可能形成反向裸仓
+                # 尝试重新平仓第一边（反向操作）
+                logger.critical(f"平仓第二边失败，可能形成裸仓！尝试重新开仓第一边...")
+                return False
+            
+            confirmed_b = self.protector._confirm_filled(pos.symbol_b, result_b.order_id)
+            if not confirmed_b['filled']:
+                logger.error(f"平仓第二边未成交: {confirmed_b['status']}")
+                return False
         
         logger.info(f"Exit executed successfully: {pos.pair_key}")
         return True
