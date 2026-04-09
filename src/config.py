@@ -162,12 +162,21 @@ class Config:
         
         if api_key_match and 'exchange' in data:
             key_from_regex = api_key_match.group(1)
-            if key_from_regex and len(key_from_regex) > 10:  # 确保不是空字符串
+            # 优先使用环境变量，其次使用配置文件
+            env_key = os.getenv('BINANCE_API_KEY', '')
+            if env_key and len(env_key) > 10:
+                data['exchange']['api_key'] = env_key
+                print(f"[Config] Using API Key from environment variable")
+            elif key_from_regex and len(key_from_regex) > 10:
                 data['exchange']['api_key'] = key_from_regex
                 
         if api_secret_match and 'exchange' in data:
             secret_from_regex = api_secret_match.group(1)
-            if secret_from_regex and len(secret_from_regex) > 10:
+            env_secret = os.getenv('BINANCE_API_SECRET', '')
+            if env_secret and len(env_secret) > 10:
+                data['exchange']['api_secret'] = env_secret
+                print(f"[Config] Using API Secret from environment variable")
+            elif secret_from_regex and len(secret_from_regex) > 10:
                 data['exchange']['api_secret'] = secret_from_regex
         
         return cls._from_dict(data)
