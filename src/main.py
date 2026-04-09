@@ -190,13 +190,30 @@ class Strategy:
         
         return loop_duration
     
+    def _get_last_scan_time(self) -> float:
+        """从数据库获取上次扫描时间戳"""
+        try:
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(scan_time) FROM scan_history")
+            result = cursor.fetchone()
+            if result and result[0]:
+                from datetime import datetime
+                dt = datetime.fromisoformat(result[0].replace(' ', 'T'))
+                return dt.timestamp()
+        except Exception as e:
+            logger.warning(f"无法读取上次扫描时间: {e}")
+        return time.time()  # 如果失败，使用当前时间
+    
     def _trading_loop(self):
         """交易主循环 - 带错误隔离"""
         logger.info("Starting trading loop...")
         tracer.register_heartbeat("TradingLoop")
         
-        last_scan_time = [time.time()]  # 使用list以便在迭代中修改
+        # 从数据库读取上次扫描时间，确保定时准确
+        last_scan_time = [self._get_last_scan_time()]
         scan_interval = 3600  # 每小时扫描一次
+        logger.info(f"Last scan time from DB: {datetime.fromtimestamp(last_scan_time[0]).isoformat()}")
         consecutive_errors = 0
         max_consecutive_errors = 10
         
