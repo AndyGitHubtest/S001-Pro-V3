@@ -85,6 +85,13 @@ class ExchangeAPI:
             logger.error(f"❌ Failed to init exchange: {e}")
             raise
     
+    @staticmethod
+    def _to_futures_symbol(symbol: str) -> str:
+        """转换symbol格式: BTC/USDT → BTC/USDT:USDT (ccxt binanceusdm要求)"""
+        if ':' not in symbol:
+            return symbol + ':USDT'
+        return symbol
+    
     def get_balance(self) -> Dict:
         """获取账户余额"""
         try:
@@ -100,7 +107,8 @@ class ExchangeAPI:
     def get_position(self, symbol: str) -> Optional[Dict]:
         """获取持仓信息"""
         try:
-            positions = self.exchange.fetch_positions([symbol])
+            fs = self._to_futures_symbol(symbol)
+            positions = self.exchange.fetch_positions([fs])
             for pos in positions:
                 if pos['symbol'] == symbol and float(pos['contracts']) != 0:
                     return {
@@ -118,7 +126,7 @@ class ExchangeAPI:
     def get_ticker(self, symbol: str) -> Optional[Dict]:
         """获取行情"""
         try:
-            ticker = self.exchange.fetch_ticker(symbol)
+            ticker = self.exchange.fetch_ticker(self._to_futures_symbol(symbol))
             return {
                 'bid': ticker['bid'],
                 'ask': ticker['ask'],
@@ -137,12 +145,13 @@ class ExchangeAPI:
             if reduce_only:
                 params['reduceOnly'] = True
             
+            fs = self._to_futures_symbol(symbol)
             order = self.exchange.create_market_buy_order(
-                symbol=symbol,
+                symbol=fs,
                 amount=amount,
                 params=params
             ) if side == 'buy' else self.exchange.create_market_sell_order(
-                symbol=symbol,
+                symbol=fs,
                 amount=amount,
                 params=params
             )
@@ -163,12 +172,13 @@ class ExchangeAPI:
                          price: float, reduce_only: bool = False) -> OrderResult:
         """下限价单"""
         try:
+            fs = self._to_futures_symbol(symbol)
             order = self.exchange.create_limit_buy_order(
-                symbol=symbol,
+                symbol=fs,
                 amount=amount,
                 price=price
             ) if side == 'buy' else self.exchange.create_limit_sell_order(
-                symbol=symbol,
+                symbol=fs,
                 amount=amount,
                 price=price
             )
@@ -187,7 +197,7 @@ class ExchangeAPI:
     def check_order_status(self, symbol: str, order_id: str) -> Optional[Dict]:
         """检查订单状态"""
         try:
-            order = self.exchange.fetch_order(order_id, symbol)
+            order = self.exchange.fetch_order(order_id, self._to_futures_symbol(symbol))
             return {
                 'id': order['id'],
                 'status': order['status'],
@@ -409,7 +419,7 @@ class NakedPositionProtector:
     def _cancel_order(self, symbol: str, order_id: str):
         """取消订单"""
         try:
-            self.api.exchange.cancel_order(order_id, symbol)
+            self.api.exchange.cancel_order(order_id, self.api._to_futures_symbol(symbol))
             log_info("Protector", "订单已取消", order_id=order_id, symbol=symbol)
         except Exception as e:
             log_error("Protector", "取消订单失败", e, order_id=order_id)
@@ -643,10 +653,12 @@ class Trader:
         
         # 获取交易所所有持仓
         exchange_positions = self.api.exchange.fetch_positions()
-        active_exchange_positions = {
-            p['symbol']: p for p in exchange_positions 
-            if float(p.get('contracts', 0)) != 0
-        }
+        active_exchange_positions = {}
+        for p in exchange_positions:
+            if float(p.get('contracts', 0)) != 0:
+                # 标准化key: BTC/USDT:USDT → BTC/USDT
+                sym = p['symbol'].replace(':USDT', '') if ':' in p['symbol'] else p['symbol']
+                active_exchange_positions[sym] = p
         
         logger.info(f"Exchange positions: {len(active_exchange_positions)}, Local positions: {len(db_positions)}")
         
