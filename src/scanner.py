@@ -130,19 +130,23 @@ class Scanner:
         
         return pair_records
     
-    # 垃圾币/非主流过滤黑名单
+    # ===== 第一阶段预筛黑名单 (硬性排除, 这些币永远不进入配对) =====
     SYMBOL_BLACKLIST = {
-        # 股票代币
+        # --- 股票代币 (受股市时间/规则影响, 不适合24h套利) ---
         "TSLA/USDT", "MSTR/USDT", "AMZN/USDT", "COIN/USDT", "PLTR/USDT",
         "NVDA/USDT", "GOOGL/USDT", "META/USDT", "AAPL/USDT", "HOOD/USDT",
-        "TSM/USDT", "MU/USDT", "SNDK/USDT", "INTC/USDT",
-        # 指数/商品
-        "SPY/USDT", "QQQ/USDT", "XAU/USDT", "XAG/USDT", "XPT/USDT",
-        "XPD/USDT", "BTCDOM/USDT", "CL/USDT", "BZ/USDT", "NATGAS/USDT",
-        # 稳定币 (无波动，不适合套利)
-        "USDC/USDT", "FRAX/USDT", "PUMPBTC/USDT", "XAUT/USDT",
-        # Meme/垃圾 (中文名、单字母等明显垃圾)
-        "USELESS/USDT", "PAXG/USDT",
+        "TSM/USDT", "MU/USDT", "SNDK/USDT", "INTC/USDT", "PAYP/USDT",
+        # --- 商品/贵金属 (走势独立, 与crypto无相关性) ---
+        "XAU/USDT", "XAG/USDT", "XPT/USDT", "XPD/USDT",
+        "CL/USDT", "BZ/USDT", "NATGAS/USDT", "COPPER/USDT", "PRL/USDT",
+        # --- 指数/ETF代币 ---
+        "SPY/USDT", "QQQ/USDT", "EWY/USDT", "EWJ/USDT", "BTCDOM/USDT",
+        # --- 稳定币/锚定币 (无波动, 套利无意义) ---
+        "USDC/USDT", "FRAX/USDT", "USDT/USDT", "STBL/USDT", "STABLE/USDT",
+        # --- 黄金/BTC锚定代币 (与底层资产同步, 不独立波动) ---
+        "XAUT/USDT", "PAXG/USDT", "PUMPBTC/USDT",
+        # --- 已确认垃圾/无意义代币 ---
+        "USELESS/USDT", "CRCL/USDT",
     }
     
     # 预筛门槛: 24h USDT成交量最低500万才有资格进入配对
@@ -172,18 +176,26 @@ class Scanner:
             logger.info("K线数据库已连接")
             cursor = conn.cursor()
             
-            # SQL预筛: 24h数据完整 + 历史≥30天 + 成交量≥500万USDT
+            # SQL预筛: 5重条件
+            # 1. 24h数据完整 (≥1000条1m)
+            # 2. 24h USDT成交量 ≥ 500万
+            # 3. 历史数据 ≥ 30天 (43200条)
+            # 4. 24h有足够波动 (max-min)/avg > 1%  — 排除稳定币/死币
+            # 5. 24h数据连续 (≥1300条 ≈ 22h, 排除停牌/退市)
             min_vol = self.PRE_FILTER_MIN_VOL_USDT
             cursor.execute("""
-                SELECT s.symbol, s.cnt, s.vol_usdt
+                SELECT s.symbol, s.cnt, s.vol_usdt, s.volatility
                 FROM (
                     SELECT symbol, 
                            COUNT(*) as cnt,
-                           SUM(volume * close) as vol_usdt
+                           SUM(volume * close) as vol_usdt,
+                           (MAX(close) - MIN(close)) / NULLIF(AVG(close), 0) as volatility
                     FROM klines 
                     WHERE ts > (SELECT MAX(ts) - 86400000 FROM klines)
                     GROUP BY symbol
-                    HAVING cnt >= 1000 AND SUM(volume * close) >= ?
+                    HAVING cnt >= 1300 
+                       AND SUM(volume * close) >= ?
+                       AND (MAX(close) - MIN(close)) / NULLIF(AVG(close), 0) > 0.01
                 ) s
                 INNER JOIN (
                     SELECT symbol, COUNT(*) as total 
@@ -195,33 +207,38 @@ class Scanner:
             """, (min_vol,))
             rows = cursor.fetchall()
             
-            # Python层过滤: 黑名单 + 垃圾币
+            # Python层过滤: 黑名单 + 中文 + 单字母
             symbols = []
-            filtered_reasons = {'blacklist': 0, 'chinese': 0, 'single_letter': 0}
-            for symbol, cnt, vol_usdt in rows:
+            filtered = {'blacklist': 0, 'chinese': 0, 'single_letter': 0}
+            for symbol, cnt, vol_usdt, volatility in rows:
+                # 黑名单 (股票/商品/稳定币等)
                 if symbol in self.SYMBOL_BLACKLIST:
-                    filtered_reasons['blacklist'] += 1
+                    filtered['blacklist'] += 1
                     continue
-                if any('\u4e00' <= ch <= '\u9fff' for ch in symbol):
-                    filtered_reasons['chinese'] += 1
+                # 中文/特殊字符
+                if any(ord(c) > 127 for c in symbol.split('/')[0]):
+                    filtered['chinese'] += 1
                     continue
+                # 单字母 + 纯数字
                 base = symbol.split("/")[0] if "/" in symbol else symbol
                 if len(base) <= 1:
-                    filtered_reasons['single_letter'] += 1
+                    filtered['single_letter'] += 1
+                    continue
+                if base.isdigit():
+                    filtered['single_letter'] += 1
                     continue
                 symbols.append(symbol)
             
-            total_filtered = sum(filtered_reasons.values())
-            logger.info(f"预筛结果: {len(rows)}个≥{min_vol/1e6:.0f}M USDT → "
-                       f"{len(symbols)}个合格 "
-                       f"(黑名单{filtered_reasons['blacklist']}, "
-                       f"中文{filtered_reasons['chinese']}, "
-                       f"单字母{filtered_reasons['single_letter']})")
+            logger.info(
+                f"预筛: {len(rows)}个通过SQL(≥{min_vol/1e6:.0f}M+>1%波动) → "
+                f"{len(symbols)}个合格 "
+                f"(排除: 黑名单{filtered['blacklist']}, "
+                f"特殊字符{filtered['chinese']}, "
+                f"垃圾名{filtered['single_letter']})")
             
-            # 打印前10方便诊断
             if symbols:
-                top_syms = symbols[:10]
-                logger.info(f"Top 10: {', '.join(top_syms)}")
+                logger.info(f"Top 10: {', '.join(symbols[:10])}")
+                logger.info(f"共{len(symbols)}个币种 → 将生成{len(symbols)*(len(symbols)-1)//2}个候选配对")
             
             return symbols
             
