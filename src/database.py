@@ -580,6 +580,53 @@ class DatabaseManager:
             
             conn.commit()
     
+    # ========== Shutdown Snapshot ==========
+    
+    def save_shutdown_snapshot(self, snapshot: Dict):
+        """保存停机快照 (用于重启恢复)"""
+        import json
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # 使用单行表存储JSON快照
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shutdown_snapshot (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    data TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                INSERT OR REPLACE INTO shutdown_snapshot (id, data) VALUES (1, ?)
+            """, (json.dumps(snapshot, default=str),))
+            conn.commit()
+            logger.info(f"停机快照已保存: {len(snapshot.get('open_positions', []))} 个持仓")
+    
+    def get_shutdown_snapshot(self) -> Optional[Dict]:
+        """获取停机快照"""
+        import json
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT data FROM shutdown_snapshot WHERE id = 1")
+                row = cursor.fetchone()
+                if row:
+                    return json.loads(row[0])
+        except Exception as e:
+            logger.warning(f"获取停机快照失败: {e}")
+        return None
+    
+    def get_recent_trades(self, days: int = 7) -> List[TradeRecord]:
+        """获取最近N天的交易记录"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM trades 
+                WHERE entry_time >= datetime('now', ? || ' days')
+                ORDER BY entry_time DESC
+            """, (f"-{days}",))
+            rows = cursor.fetchall()
+            return [self._row_to_trade(row) for row in rows]
+    
     # ========== Scan History ==========
     
     def log_scan(self, pool: str, candidates: int, l1: int, l2: int, l3: int, 

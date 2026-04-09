@@ -481,9 +481,19 @@ class Engine:
         if not pos:
             return
         
-        # 计算当前Z-Score
+        # 读取B边真实数据
+        tf = self.cfg.trading.primary.timeframe if pos.pool == 'primary' else self.cfg.trading.secondary.timeframe
+        data_b = self.data_reader.get_klines(pos.symbol_b, tf, 200)
+        if data_b is None or len(data_b) < 120:
+            logger.warning(f"B边数据不足，跳过 {pair_key}")
+            return
+        
+        # 计算当前Z-Score (用真实A/B边数据)
         prices_a = data['close'].values
-        prices_b = prices_a * 0.5  # 简化
+        prices_b = data_b['close'].values
+        min_len = min(len(prices_a), len(prices_b))
+        prices_a = prices_a[-min_len:]
+        prices_b = prices_b[-min_len:]
         current_z, _ = self.signal_gen.calc_zscore(prices_a, prices_b)
         
         # 获取当前价格
@@ -511,11 +521,18 @@ class Engine:
         if not self.position_mgr.can_open(pool):
             return
         
-        # 计算信号
-        prices_a = data['close'].values
-        prices_b = prices_a * 0.5  # 简化
+        # 读取B边真实数据
+        tf = self.cfg.trading.primary.timeframe if pool == 'primary' else self.cfg.trading.secondary.timeframe
+        data_b = self.data_reader.get_klines(pair.symbol_b, tf, 200)
+        if data_b is None or len(data_b) < 120:
+            return
         
-        # 简化信号生成
+        # 计算信号 (用真实A/B边数据)
+        prices_a = data['close'].values
+        prices_b = data_b['close'].values
+        min_len = min(len(prices_a), len(prices_b))
+        prices_a = prices_a[-min_len:]
+        prices_b = prices_b[-min_len:]
         z_score, beta = self.signal_gen.calc_zscore(prices_a, prices_b)
         
         params = {
@@ -529,12 +546,12 @@ class Engine:
             # 确定方向
             direction = 'long_spread' if z_score < 0 else 'short_spread'
             
-            # 计算仓位
-            price_a = prices_a[-1]
-            price_b = prices_b[-1]
+            # 计算仓位 (等额名义金额分配)
+            price_a = float(prices_a[-1])
+            price_b = float(prices_b[-1])
             
-            # 简化仓位计算
-            notional = self.cfg.trading.min_per_pair
+            pool_cfg = self.cfg.trading.primary if pool == 'primary' else self.cfg.trading.secondary
+            notional = pool_cfg.capital_per_position
             qty_a = notional / 2 / price_a
             qty_b = notional / 2 / price_b
             

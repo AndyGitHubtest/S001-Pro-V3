@@ -70,6 +70,7 @@ class ExchangeAPI:
                 'options': {
                     'adjustForTimeDifference': True,
                     'recvWindow': 10000,
+                    'warnOnFetchOpenOrdersWithoutSymbol': False,
                 }
             })
             
@@ -132,12 +133,18 @@ class ExchangeAPI:
                           reduce_only: bool = False) -> OrderResult:
         """下市价单"""
         try:
+            params = {}
+            if reduce_only:
+                params['reduceOnly'] = True
+            
             order = self.exchange.create_market_buy_order(
                 symbol=symbol,
-                amount=amount
+                amount=amount,
+                params=params
             ) if side == 'buy' else self.exchange.create_market_sell_order(
                 symbol=symbol,
-                amount=amount
+                amount=amount,
+                params=params
             )
             
             return OrderResult(
@@ -402,8 +409,8 @@ class NakedPositionProtector:
     def _cancel_order(self, symbol: str, order_id: str):
         """取消订单"""
         try:
-            # ccxt取消订单接口
-            pass  # 具体实现取决于交易所API
+            self.api.exchange.cancel_order(order_id, symbol)
+            log_info("Protector", "订单已取消", order_id=order_id, symbol=symbol)
         except Exception as e:
             log_error("Protector", "取消订单失败", e, order_id=order_id)
     

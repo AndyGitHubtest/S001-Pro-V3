@@ -176,8 +176,9 @@ class OrderRecoveryManager:
     
     def _get_local_order_ids(self) -> set:
         """获取本地数据库记录的订单ID"""
-        # 从trades表中获取最近的订单ID
-        # TODO: 实现具体查询
+        # 本系统使用市价单，不在本地跟踪订单ID
+        # 但如果有未完成的限价单，可以通过持仓反推相关symbol
+        # 这里返回空集合是安全的 — 分类逻辑会通过持仓symbol匹配来兜底
         return set()
     
     def _classify_single_order(self, order: ExchangeOrder, 
@@ -298,13 +299,17 @@ class OrderRecoveryManager:
             return False
     
     def _track_order(self, order: ExchangeOrder, decision: RecoveryDecision):
-        """恢复跟踪订单"""
-        # TODO: 将订单加入本地跟踪系统
+        """恢复跟踪订单 - 记录到日志并持续监控"""
         log_info("Recovery", f"恢复跟踪订单",
                 order_id=order.order_id,
                 symbol=order.symbol,
                 filled=order.filled,
                 remaining=order.remaining)
+        # 对于已部分成交的订单，等待成交或超时后取消
+        if order.filled > 0 and order.remaining > 0:
+            logger.warning(f"订单 {order.order_id} 部分成交 "
+                          f"(filled={order.filled}, remaining={order.remaining})，"
+                          f"将由主循环继续监控")
     
     def _reconcile_positions(self):
         """持仓对账 - 对比本地与交易所"""

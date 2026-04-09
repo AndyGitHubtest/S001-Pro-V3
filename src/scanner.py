@@ -469,14 +469,62 @@ class Scanner:
         return float(np.std(spread))
     
     def _get_min_volume(self, sym_a: str, sym_b: str) -> int:
-        """获取最小日成交量"""
-        # TODO: 从Data-Core获取
-        return 10_000_000  # 模拟数据
+        """获取最小日成交量 (从共享K线数据库)"""
+        try:
+            conn = self.db._get_klines_connection()
+            if conn is None:
+                return 0  # 无数据库则返回0让filter决定
+            cursor = conn.cursor()
+            # 取最近24h的成交量之和，取两个币种中的较小值
+            cursor.execute("""
+                SELECT COALESCE(SUM(volume), 0) FROM klines 
+                WHERE symbol = ? AND interval = '1m'
+                AND ts > (SELECT MAX(ts) - 86400000 FROM klines)
+            """, (sym_a,))
+            vol_a = cursor.fetchone()[0] or 0
+            
+            cursor.execute("""
+                SELECT COALESCE(SUM(volume), 0) FROM klines 
+                WHERE symbol = ? AND interval = '1m'
+                AND ts > (SELECT MAX(ts) - 86400000 FROM klines)
+            """, (sym_b,))
+            vol_b = cursor.fetchone()[0] or 0
+            
+            return int(min(vol_a, vol_b))
+        except Exception as e:
+            logger.warning(f"获取成交量失败 {sym_a}/{sym_b}: {e}")
+            return 0
     
     def _get_max_bid_ask_spread(self, sym_a: str, sym_b: str) -> float:
-        """获取最大买卖价差百分比"""
-        # TODO: 从Data-Core获取
-        return 0.0001  # 模拟数据 0.01%
+        """获取最大买卖价差百分比 (估算: 用close价格的波动率近似)"""
+        try:
+            conn = self.db._get_klines_connection()
+            if conn is None:
+                return 1.0  # 无数据则返回极大值让filter决定
+            cursor = conn.cursor()
+            # 用最近100条1m K线的 (high-low)/close 平均值近似 bid-ask spread
+            cursor.execute("""
+                SELECT AVG((high - low) / NULLIF(close, 0)) FROM (
+                    SELECT high, low, close FROM klines 
+                    WHERE symbol = ? AND interval = '1m'
+                    ORDER BY ts DESC LIMIT 100
+                )
+            """, (sym_a,))
+            spread_a = cursor.fetchone()[0] or 1.0
+            
+            cursor.execute("""
+                SELECT AVG((high - low) / NULLIF(close, 0)) FROM (
+                    SELECT high, low, close FROM klines 
+                    WHERE symbol = ? AND interval = '1m'
+                    ORDER BY ts DESC LIMIT 100
+                )
+            """, (sym_b,))
+            spread_b = cursor.fetchone()[0] or 1.0
+            
+            return float(max(spread_a, spread_b))
+        except Exception as e:
+            logger.warning(f"获取价差失败 {sym_a}/{sym_b}: {e}")
+            return 1.0
     
     def _calc_score(self, m: PairMetrics) -> float:
         """计算综合评分"""

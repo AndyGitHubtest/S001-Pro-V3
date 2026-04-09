@@ -376,13 +376,13 @@ class WebServerV2:
         try:
             positions = self.db.get_open_positions() if self.db else []
             return [{
-                "id": p.id,
                 "pair_key": p.pair_key,
+                "pool": p.pool,
                 "direction": p.direction,
                 "symbol_a": p.symbol_a,
                 "symbol_b": p.symbol_b,
-                "quantity_a": p.quantity_a,
-                "quantity_b": p.quantity_b,
+                "qty_a": p.qty_a,
+                "qty_b": p.qty_b,
                 "entry_price_a": p.entry_price_a,
                 "entry_price_b": p.entry_price_b,
                 "entry_z": p.entry_z,
