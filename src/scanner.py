@@ -114,13 +114,31 @@ class Scanner:
         return pair_records
     
     def _fetch_symbols(self) -> List[str]:
-        """从Data-Core获取候选币种"""
-        # TODO: 实现HTTP调用Data-Core API
-        # 临时返回模拟数据
-        return [
-            "BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT",
-            "ARB/USDT", "OP/USDT", "MATIC/USDT", "LINK/USDT"
-        ]
+        """从共享数据库获取候选币种列表"""
+        try:
+            conn = self.db._get_klines_connection()
+            if conn is None:
+                logger.warning("K线数据库未配置，使用默认币种")
+                return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT",
+                        "ARB/USDT", "OP/USDT", "MATIC/USDT", "LINK/USDT"]
+            
+            cursor = conn.cursor()
+            # 获取最近24小时有数据的币种
+            cursor.execute("""
+                SELECT DISTINCT symbol FROM klines 
+                WHERE timestamp > datetime('now', '-1 day')
+                ORDER BY symbol
+                LIMIT 50
+            """)
+            symbols = [row[0] for row in cursor.fetchall()]
+            
+            logger.info(f"从共享数据库获取到 {len(symbols)} 个币种")
+            return symbols
+            
+        except Exception as e:
+            logger.error(f"获取币种列表失败: {e}")
+            # 失败时返回默认币种
+            return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT"]
     
     def _generate_pairs(self, symbols: List[str]) -> List[Tuple[str, str]]:
         """生成配对组合"""
@@ -221,24 +239,55 @@ class Scanner:
         return m
     
     def _load_data(self, sym_a: str, sym_b: str, pool: str) -> Optional[pd.DataFrame]:
-        """加载配对历史数据"""
-        # TODO: 从Data-Core或本地DB加载
-        # 临时返回模拟数据
-        np.random.seed(hash(f"{sym_a}-{sym_b}") % 2**32)
-        n = 500
-        
-        # 生成协整的模拟数据
-        beta = 0.5 + np.random.rand() * 0.5
-        noise = np.random.randn(n) * 0.02
-        
-        log_a = np.cumsum(np.random.randn(n) * 0.01) + 10
-        log_b = (log_a - np.mean(log_a)) / beta + np.mean(log_a) + noise
-        
-        df = pd.DataFrame({
-            'a': np.exp(log_a),
-            'b': np.exp(log_b)
-        })
-        return df
+        """从共享数据库加载配对历史数据"""
+        try:
+            conn = self.db._get_klines_connection()
+            if conn is None:
+                logger.warning("K线数据库未配置，无法加载数据")
+                return None
+            
+            # 获取timeframe
+            timeframe = self.cfg.trading.primary.timeframe if pool == "primary" else self.cfg.trading.secondary.timeframe
+            
+            # 查询两个币种的数据
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT timestamp, close FROM klines 
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY timestamp DESC
+                LIMIT 1000
+            """, (sym_a, timeframe))
+            rows_a = cursor.fetchall()
+            
+            cursor.execute("""
+                SELECT timestamp, close FROM klines 
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY timestamp DESC
+                LIMIT 1000
+            """, (sym_b, timeframe))
+            rows_b = cursor.fetchall()
+            
+            if len(rows_a) < 120 or len(rows_b) < 120:
+                logger.debug(f"{sym_a}-{sym_b}: 数据不足 ({len(rows_a)}/{len(rows_b)})")
+                return None
+            
+            # 转换为DataFrame并对齐时间戳
+            df_a = pd.DataFrame(rows_a, columns=['timestamp', 'a'])
+            df_b = pd.DataFrame(rows_b, columns=['timestamp', 'b'])
+            
+            # 合并并取交集
+            df = pd.merge(df_a, df_b, on='timestamp', how='inner')
+            df = df.sort_values('timestamp')
+            
+            if len(df) < 120:
+                logger.debug(f"{sym_a}-{sym_b}: 对齐后数据不足 ({len(df)})")
+                return None
+            
+            return df[['a', 'b']].astype(float)
+            
+        except Exception as e:
+            logger.error(f"加载数据失败 {sym_a}-{sym_b}: {e}")
+            return None
     
     def _calc_median_correlation(self, data: pd.DataFrame, window: int = 120) -> float:
         """计算滚动相关系数的中位数"""

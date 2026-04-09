@@ -94,17 +94,42 @@ class TradeRecord:
 
 
 class DatabaseManager:
-    """数据库管理器 - 所有数据库操作的唯一入口"""
+    """数据库管理器 - 所有数据库操作的唯一入口
     
-    def __init__(self, db_path: str = "data/strategy.db"):
-        self.db_path = db_path
+    支持双数据库架构:
+    - klines_db: 共享K线数据库 (Data-Core提供，只读)
+    - state_db: 策略状态数据库 (私有，读写)
+    """
+    
+    def __init__(self, state_db_path: str = "data/strategy.db", 
+                 klines_db_path: str = None):
+        self.state_db_path = state_db_path
+        self.klines_db_path = klines_db_path
+        self._klines_conn = None  # 共享数据库连接
         self._init_database()
     
     def _get_connection(self) -> sqlite3.Connection:
-        """获取数据库连接"""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        """获取策略数据库连接 (读写)"""
+        conn = sqlite3.connect(self.state_db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
+    
+    def _get_klines_connection(self) -> sqlite3.Connection:
+        """获取K线数据库连接 (只读)"""
+        if self._klines_conn is None and self.klines_db_path:
+            try:
+                self._klines_conn = sqlite3.connect(
+                    self.klines_db_path, 
+                    check_same_thread=False,
+                    uri=True  # 支持URI模式
+                )
+                self._klines_conn.row_factory = sqlite3.Row
+                # 设置为只读模式
+                self._klines_conn.execute("PRAGMA query_only = ON")
+            except Exception as e:
+                logger.error(f"K线数据库连接失败: {e}")
+                raise
+        return self._klines_conn
     
     def _init_database(self):
         """初始化数据库表结构"""
@@ -563,12 +588,16 @@ _db: Optional[DatabaseManager] = None
 
 
 def get_db() -> DatabaseManager:
-    """获取全局数据库实例"""
+    """获取全局数据库实例 (支持双数据库)"""
     global _db
     if _db is None:
         from config import get_config
         cfg = get_config()
-        _db = DatabaseManager(cfg.database.state_db)
+        # 传入两个数据库路径
+        _db = DatabaseManager(
+            state_db_path=cfg.database.state_db,
+            klines_db_path=getattr(cfg.database, 'klines_db', None)
+        )
     return _db
 
 
