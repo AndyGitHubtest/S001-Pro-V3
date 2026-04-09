@@ -48,14 +48,14 @@ class DataReader:
             if len(df) >= limit:
                 return df.tail(limit).copy()
         
-        # 从数据库读取
+        # 从数据库读取 (Data-Core schema: ts, interval)
         try:
             conn = sqlite3.connect(self.cfg.database.klines_db)
             query = """
-                SELECT timestamp, open, high, low, close, volume
+                SELECT ts, open, high, low, close, volume
                 FROM klines
-                WHERE symbol = ? AND timeframe = ?
-                ORDER BY timestamp DESC
+                WHERE symbol = ? AND interval = ?
+                ORDER BY ts DESC
                 LIMIT ?
             """
             df = pd.read_sql_query(query, conn, params=(symbol, timeframe, limit))
@@ -65,6 +65,8 @@ class DataReader:
                 logger.warning(f"No data for {symbol} {timeframe}")
                 return None
             
+            # 重命名ts为timestamp保持兼容
+            df = df.rename(columns={'ts': 'timestamp'})
             df = df.sort_values('timestamp')
             self.cache[cache_key] = df
             return df
