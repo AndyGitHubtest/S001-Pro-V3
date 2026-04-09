@@ -66,6 +66,34 @@ Z-Score: {data['entry_z']:.2f}
 持仓时间: {data.get('hold_time', 'N/A')}
 时间: {datetime.now().strftime('%H:%M:%S')}
 """
+        elif event == 'scan_completed':
+            pairs = data.get('pairs', [])
+            funnel = data.get('funnel', {})
+            duration = data.get('duration_s', 0)
+            
+            # 漏斗摘要
+            msg = f"""📊 <b>扫描完成</b> ({duration:.0f}s)
+            
+<b>漏斗:</b>
+  候选 {funnel.get('candidates', '?')} → L1 {funnel.get('l1', '?')} → L2 {funnel.get('l2', '?')} → L3 {funnel.get('l3', '?')} → 回测 {funnel.get('backtest', '?')} → <b>最终 {len(pairs)}</b>
+"""
+            # Top配对详情
+            if pairs:
+                msg += "\n<b>入池配对:</b>\n"
+                for i, p in enumerate(pairs[:15], 1):
+                    sym = f"{p.get('symbol_a','')}-{p.get('symbol_b','')}"
+                    score = p.get('score', 0)
+                    pf = p.get('pf', 0)
+                    ze = p.get('z_entry', 0)
+                    zx = p.get('z_exit', 0)
+                    trades = p.get('trades_count', 0)
+                    msg += f"  {i}. {sym} | S={score:.2f} PF={pf:.1f} E={ze:.1f} X={zx:.1f} N={trades}\n"
+            else:
+                msg += "\n⚠️ 无配对通过筛选"
+            
+            msg += f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
+            return msg
+        
         elif event == 'error':
             return f"""
 🔴 <b>错误</b>

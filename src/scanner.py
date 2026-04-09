@@ -118,10 +118,16 @@ class Scanner:
             duration_ms=int(duration)
         )
         
-        logger.info(f"Scan completed: {len(results)} pairs saved, duration: {duration:.0f}ms")
+        duration_s = duration / 1000
+        logger.info(f"Scan completed: {len(results)} pairs saved, duration: {duration_s:.1f}s")
         logger.info(f"Funnel: {funnel.candidates}→{funnel.data_loaded}→"
                     f"{funnel.layer1_passed}→{funnel.layer2_passed}→"
                     f"{funnel.layer3_passed}→{funnel.backtest_passed}→{funnel.final_count}")
+        
+        # 保存最后一次扫描的漏斗和结果 (供main.py推送TG)
+        self._last_funnel = funnel
+        self._last_results = results
+        self._last_duration_s = duration_s
         
         # 7. 自适应调参评估
         try:

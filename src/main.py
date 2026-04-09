@@ -135,8 +135,28 @@ class Strategy:
                 log_info("Strategy", "扫描完成", pair_count=len(pairs))
                 logger.info(f"Scan result: {len(pairs)} pairs")
             
+            # 推送TG通知 — 带漏斗数据和配对详情
+            funnel = getattr(self.scanner, '_last_funnel', None)
+            results = getattr(self.scanner, '_last_results', [])
+            duration_s = getattr(self.scanner, '_last_duration_s', 0)
+            
             self.monitor.notify_event('scan_completed', {
-                'pair_count': len(pairs),
+                'pairs': [
+                    {
+                        'symbol_a': m.symbol_a, 'symbol_b': m.symbol_b,
+                        'score': m.score, 'pf': m.pf, 
+                        'z_entry': m.z_entry, 'z_exit': m.z_exit,
+                        'trades_count': m.trades_count
+                    } for m in results
+                ],
+                'funnel': {
+                    'candidates': funnel.candidates if funnel else 0,
+                    'l1': funnel.layer1_passed if funnel else 0,
+                    'l2': funnel.layer2_passed if funnel else 0,
+                    'l3': funnel.layer3_passed if funnel else 0,
+                    'backtest': funnel.backtest_passed if funnel else 0,
+                },
+                'duration_s': duration_s,
                 'timestamp': datetime.now().isoformat()
             })
             

@@ -116,7 +116,7 @@ class NotificationConfig:
     enabled: bool = False
     bot_token: str = ""
     chat_id: str = ""
-    events: List[str] = field(default_factory=lambda: ["position_opened", "position_closed", "error"])
+    events: List[str] = field(default_factory=lambda: ["position_opened", "position_closed", "scan_completed", "error"])
 
 
 @dataclass
