@@ -162,11 +162,14 @@ class Config:
         
         if 'exchange' in data:
             ex = data['exchange']
+            # 强制转换为标准str，避免YAML 6.0+的字符串问题
+            api_key = str(ex.get('api_key', '')) if ex.get('api_key') else ''
+            api_secret = str(ex.get('api_secret', '')) if ex.get('api_secret') else ''
             config.exchange = ExchangeConfig(
-                name=ex.get('name', 'binance'),
-                sandbox=ex.get('sandbox', False),
-                api_key=ex.get('api_key', ''),
-                api_secret=ex.get('api_secret', '')
+                name=str(ex.get('name', 'binance')),
+                sandbox=bool(ex.get('sandbox', False)),
+                api_key=api_key,
+                api_secret=api_secret
             )
         
         if 'data_core' in data:

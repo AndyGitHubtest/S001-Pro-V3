@@ -1,0 +1,17 @@
+{
+  "telegram": {
+    "bot_token": "",
+    "chat_id": ""
+  },
+  "enable_tg": true,
+  "database": "data/strategy.db",
+  "cycle_interval": 60,
+  "alert_thresholds": {
+    "max_latency_ms": 5000,
+    "min_success_rate": 95
+  },
+  "monitor": {
+    "log_file": "logs/chain_monitor.jsonl",
+    "summary_interval": 300
+  }
+}
