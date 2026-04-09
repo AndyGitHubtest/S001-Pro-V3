@@ -189,7 +189,14 @@ class WebServerV2:
         return app
     
     def _render_spa(self) -> str:
-        """完整监控面板 — 暗色主题，入池配对全字段，持仓/交易/漏斗，5秒自动刷新"""
+        """加载面板模板文件"""
+        # 从模板文件加载
+        tpl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'dashboard.html')
+        try:
+            with open(tpl_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            logger.warning(f"Template not found: {tpl_path}, using inline fallback")
         return '''<!DOCTYPE html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

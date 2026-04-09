@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>S001-Pro V3 | Cross-Asset Statistical Arbitrage</title>
+<style>
+:root{--bg:#080c15;--c1:#0f1629;--c2:#141b2d;--bd:#1e293b;--t:#e2e8f0;--dm:#64748b;--g:#10b981;--r:#ef4444;--y:#f59e0b;--cy:#06b6d4;--bl:#3b82f6;--pp:#a78bfa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--t);font-size:12px;line-height:1.5}
+.w{max-width:1600px;margin:0 auto;padding:10px}
+
+/* === TOP BAR === */
+.top{display:flex;justify-content:space-between;align-items:center;background:var(--c1);border:1px solid var(--bd);border-radius:10px;padding:10px 16px;margin-bottom:10px}
+.top .logo{font-size:15px;font-weight:700;background:linear-gradient(135deg,var(--g),var(--cy));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.top .acct{display:flex;gap:20px;align-items:center;font-size:12px}
+.top .acct .k{color:var(--dm);font-size:10px;text-transform:uppercase;letter-spacing:.6px}
+.top .acct .vl{font-size:16px;font-weight:700}
+.lv{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;animation:p 2s infinite}
+.lv-g{background:var(--g)}
+.lv-y{background:var(--y)}
+.lv-r{background:var(--r)}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
+.risk-ok{color:var(--g)}.risk-warn{color:var(--y)}.risk-stop{color:var(--r)}
+
+/* === GRID === */
+.grid{display:grid;gap:10px;margin-bottom:10px}
+.g2{grid-template-columns:1fr 1fr}
+.g3{grid-template-columns:1fr 1fr 1fr}
+.g23{grid-template-columns:2fr 1fr}
+.g32{grid-template-columns:1fr 2fr}
+@media(max-width:1000px){.g2,.g3,.g23,.g32{grid-template-columns:1fr}}
+
+/* === CARD === */
+.cd{background:var(--c1);border:1px solid var(--bd);border-radius:8px;padding:12px;overflow:hidden}
+.cd .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
+.cd .hd h3{font-size:12px;font-weight:600;color:var(--cy)}
+.cd .hd .bg{font-size:10px;background:rgba(16,185,129,.12);color:var(--g);padding:2px 8px;border-radius:10px}
+
+/* === STAT ROW === */
+.sr{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:6px}
+.si{background:var(--c2);border-radius:6px;padding:8px;text-align:center}
+.si .sv{font-size:17px;font-weight:700;margin:2px 0}
+.si .sl{font-size:9px;color:var(--dm);text-transform:uppercase;letter-spacing:.5px}
+
+/* === TABLE === */
+.sc{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:11px}
+thead th{text-align:left;padding:6px 4px;color:var(--dm);font-size:9px;text-transform:uppercase;letter-spacing:.3px;border-bottom:2px solid var(--bd);position:sticky;top:0;background:var(--c1);white-space:nowrap;font-weight:500}
+tbody td{padding:5px 4px;border-bottom:1px solid rgba(30,41,59,.3);white-space:nowrap}
+tbody tr:hover{background:rgba(30,41,59,.5)}
+th[title]{cursor:help}
+
+/* === COLORS === */
+.g{color:var(--g)}.r{color:var(--r)}.y{color:var(--y)}.cy{color:var(--cy)}.bl{color:var(--bl)}.pp{color:var(--pp)}.dm{color:var(--dm)}
+.tg{display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600}
+.tg-l{background:rgba(16,185,129,.12);color:var(--g)}.tg-s{background:rgba(239,68,68,.12);color:var(--r)}
+.tg-ok{background:rgba(16,185,129,.12);color:var(--g)}.tg-w{background:rgba(245,158,11,.12);color:var(--y)}.tg-e{background:rgba(239,68,68,.12);color:var(--r)}
+
+/* === FUNNEL === */
+.fn{display:flex;align-items:center;gap:3px;flex-wrap:wrap}
+.fn .sg{background:var(--c2);padding:4px 10px;border-radius:5px;text-align:center;min-width:58px}
+.fn .sg .n{font-size:15px;font-weight:700;color:#fff}
+.fn .sg .lb{font-size:8px;color:var(--dm)}
+.fn .ar{color:var(--dm);font-size:13px}
+
+/* === PROGRESS BAR === */
+.pb{height:6px;background:var(--c2);border-radius:3px;overflow:hidden;margin-top:4px}
+.pb .fill{height:100%;border-radius:3px;transition:width .5s}
+
+/* === LOG === */
+.log{font-family:'SF Mono',Monaco,monospace;font-size:10px;max-height:150px;overflow-y:auto;color:var(--dm)}
+.log .e{padding:2px 0;border-bottom:1px solid rgba(30,41,59,.2)}
+.log .ts{color:var(--dm);margin-right:6px}
+
+.em{text-align:center;padding:16px;color:var(--dm);font-size:11px}
+</style>
+</head>
+<body>
+<div class="w">
+
+<!-- ========== 第三层: 账户总览 ========== -->
+<div class="top">
+  <div><span class="logo">S001-Pro V3</span> <span class="dm" style="font-size:10px">Cross-Asset Statistical Arbitrage</span></div>
+  <div class="acct">
+    <div><div class="k">总权益</div><div class="vl" id="a-eq">-</div></div>
+    <div><div class="k">可用余额</div><div class="vl" id="a-free">-</div></div>
+    <div><div class="k">总杠杆</div><div class="vl" id="a-lev">-</div></div>
+    <div><div class="k">当日盈亏</div><div class="vl" id="a-pnl">-</div></div>
+    <div><div class="k">持仓对</div><div class="vl" id="a-pos">-</div></div>
+    <div><div class="k">风险</div><div class="vl" id="a-risk"><span class="lv lv-g"></span>正常</div></div>
+    <div style="text-align:right"><span class="lv lv-g"></span><b class="g" style="font-size:10px">LIVE</b><br><span class="dm" style="font-size:10px" id="ck">-</span></div>
+  </div>
+</div>
+
+<!-- ========== 扫描漏斗 ========== -->
+<div class="cd" style="margin-bottom:10px">
+  <div class="hd"><h3>🔬 扫描漏斗 (每小时更新)</h3><span class="bg" id="sd">-</span></div>
+  <div class="fn" id="fl"><div class="em">等待首次扫描...</div></div>
+</div>
+
+<div class="grid g23">
+<!-- ========== 第一层: 价差信号区 ========== -->
+<div class="cd">
+  <div class="hd"><h3>📡 入池配对 — 价差信号</h3><span class="bg" id="pb">0对</span></div>
+  <div class="sc" id="pt"><div class="em">等待扫描...</div></div>
+</div>
+
+<!-- ========== 第四层: 市场状态 ========== -->
+<div>
+  <div class="cd" style="margin-bottom:10px">
+    <div class="hd"><h3>🌐 市场状态</h3></div>
+    <div class="sr" id="mkt">
+      <div class="si"><div class="sl">API延迟</div><div class="sv dm" id="m-lat">-</div></div>
+      <div class="si"><div class="sl">数据新鲜度</div><div class="sv dm" id="m-fresh">-</div></div>
+      <div class="si"><div class="sl">CPU</div><div class="sv dm" id="m-cpu">-</div></div>
+      <div class="si"><div class="sl">内存</div><div class="sv dm" id="m-mem">-</div></div>
+    </div>
+  </div>
+
+  <!-- 保证金水位 -->
+  <div class="cd">
+    <div class="hd"><h3>💰 保证金</h3></div>
+    <div style="font-size:11px;margin-bottom:4px">
+      已用 <b id="mg-used">-</b> / 最大 <b id="mg-max">-</b>
+      <span class="dm" id="mg-pct">-</span>
+    </div>
+    <div class="pb"><div class="fill" id="mg-bar" style="width:0%;background:var(--g)"></div></div>
+  </div>
+</div>
+</div>
+
+<!-- ========== 第二层: 仓位监控区 ========== -->
+<div class="cd">
+  <div class="hd"><h3>📊 仓位监控</h3><span class="bg" id="pn">0对持仓</span></div>
+  <div class="sc" id="ps"><div class="em">暂无持仓 — 等待Z-Score信号触发开仓</div></div>
+</div>
+
+<div class="grid g2">
+<!-- ========== 交易记录 ========== -->
+<div class="cd">
+  <div class="hd"><h3>📋 交易记录</h3></div>
+  <div class="sc" id="tr"><div class="em">暂无交易</div></div>
+</div>
+
+<!-- ========== 第五层: 操作日志 ========== -->
+<div class="cd">
+  <div class="hd"><h3>📝 系统日志</h3></div>
+  <div class="log" id="lg"><div class="em">加载中...</div></div>
+</div>
+</div>
+
+</div><!-- end .w -->
+
+<script>
+const $=id=>document.getElementById(id);
+const C=v=>v>=0?'g':'r';
+const S=v=>(v>=0?'+':'')+v.toFixed(2);
+const cap=(v,mx)=>Math.min(Math.max(v,0),mx);
+function ms(n,l){return '<div class="sg"><div class="n">'+n+'</div><div class="lb">'+l+'</div></div>'}
+function ar(){return '<span class="ar">→</span>'}
+
+async function F(){try{
+  $('ck').textContent=new Date().toLocaleString('zh-CN',{hour12:false});
+
+  // === 账户总览 ===
+  const sm=await(await fetch('/api/v2/dashboard/summary')).json();
+  const fin=sm.finance||{};const op=sm.operation||{};const sys=sm.system||{};
+  $('a-eq').textContent=(fin.total_pnl!==undefined?fin.total_pnl:'—');
+  $('a-free').textContent='—';
+  $('a-lev').textContent='—';
+  $('a-pnl').textContent=S(fin.today_pnl||0);$('a-pnl').className='vl '+C(fin.today_pnl||0);
+  $('a-pos').textContent=(op.active_pairs||0)+'/3';
+
+  // 风险状态
+  const loss=Math.abs(fin.today_pnl||0);
+  if(loss>50){$('a-risk').innerHTML='<span class="lv lv-r"></span><span class="r">熔断</span>';}
+  else if(loss>30){$('a-risk').innerHTML='<span class="lv lv-y"></span><span class="y">警戒</span>';}
+  else{$('a-risk').innerHTML='<span class="lv lv-g"></span><span class="g">正常</span>';}
+
+  // === 市场状态 ===
+  $('m-cpu').textContent=(sys.cpu_percent||0)+'%';
+  $('m-cpu').className='sv '+(sys.cpu_percent>80?'r':sys.cpu_percent>50?'y':'g');
+  $('m-mem').textContent=Math.round(sys.memory_mb||0)+'M';
+
+  // 保证金
+  const posCount=op.active_pairs||0;
+  const mgUsed=posCount*100;const mgMax=300;
+  const mgPct=mgMax>0?Math.round(mgUsed/mgMax*100):0;
+  $('mg-used').textContent=mgUsed+' USDT';
+  $('mg-max').textContent=mgMax+' USDT';
+  $('mg-pct').textContent='('+mgPct+'%)';
+  $('mg-bar').style.width=mgPct+'%';
+  $('mg-bar').style.background=mgPct>80?'var(--r)':mgPct>50?'var(--y)':'var(--g)';
+
+  // === 扫描漏斗 ===
+  const sh=await(await fetch('/api/v2/market/scan-history?limit=1')).json();
+  if(sh.length>0){const f=sh[0];
+    $('sd').textContent=(f.duration_ms/1000).toFixed(0)+'s';
+    $('fl').innerHTML=ms(f.candidates||'?','候选')+ar()+ms(f.l1_passed||'?','L1 统计')+ar()+ms(f.l2_passed||'?','L2 稳定')+ar()+ms(f.l3_passed||'?','L3 机会')+ar()+ms(f.l3_passed||'?','✅ 入池');
+  }
+
+  // === 入池配对 ===
+  const P=await(await fetch('/api/v2/market/pairs?pool=primary')).json();
+  $('pb').textContent=P.length+'对';
+  $('m-fresh').textContent=op.last_scan||'-';
+  if(P.length>0){
+    let h='<table><thead><tr>'+
+      '<th>#</th><th>交易对组合</th>'+
+      '<th title="综合评分">Score</th>'+
+      '<th title="盈亏比 PF≥1.3入池">PF</th>'+
+      '<th title="夏普比率">Sharpe</th>'+
+      '<th title="回测收益">Ret</th>'+
+      '<th title="最大回撤">DD</th>'+
+      '<th title="Z-Score入场阈值 |Z|超过此值开仓">Z入场</th>'+
+      '<th title="Z-Score止盈 |Z|低于此值平仓">Z止盈</th>'+
+      '<th title="Z-Score止损 |Z|超过此值止损">Z止损</th>'+
+      '<th title="回测交易笔数">N</th>'+
+      '<th title="相关系数中位数 越高越好">Corr</th>'+
+      '<th title="协整p值 越小越好">Coint</th>'+
+      '<th title="半衰期 越小回归越快">HL</th>'+
+      '<th title="赫斯特 <0.5=均值回归">H</th>'+
+      '</tr></thead><tbody>';
+    P.forEach((p,i)=>{
+      const pf=cap(p.pf,99.99);
+      const pc=pf>=2?'g':pf>=1.5?'cy':pf>=1.3?'y':'r';
+      const hc=(p.hurst||0)<0.45?'g':(p.hurst||0)<0.55?'y':'r';
+      h+='<tr>'+
+        '<td class="dm">'+(i+1)+'</td>'+
+        '<td><b>'+p.symbol_a.replace('/USDT','')+'</b><span class="dm"> : '+p.symbol_b.replace('/USDT','')+'</span></td>'+
+        '<td><b>'+p.score.toFixed(3)+'</b></td>'+
+        '<td class="'+pc+'"><b>'+pf.toFixed(2)+'</b></td>'+
+        '<td>'+(p.sharpe?cap(p.sharpe,99).toFixed(1):'-')+'</td>'+
+        '<td class="'+C(p.total_return||0)+'">'+(p.total_return||0).toFixed(4)+'</td>'+
+        '<td class="r">'+(p.max_dd||0).toFixed(4)+'</td>'+
+        '<td class="bl"><b>'+p.z_entry.toFixed(1)+'</b></td>'+
+        '<td class="g">'+p.z_exit.toFixed(1)+'</td>'+
+        '<td class="r">'+(p.z_stop||0).toFixed(1)+'</td>'+
+        '<td>'+p.trades_count+'</td>'+
+        '<td>'+(p.corr_median||0).toFixed(3)+'</td>'+
+        '<td>'+(p.coint_p||0).toFixed(4)+'</td>'+
+        '<td>'+(p.half_life||0).toFixed(1)+'</td>'+
+        '<td class="'+hc+'">'+(p.hurst||0).toFixed(3)+'</td>'+
+        '</tr>';
+    });h+='</tbody></table>';$('pt').innerHTML=h;
+  }else{$('pt').innerHTML='<div class="em">⏳ 等待扫描完成...</div>';}
+
+  // === 仓位监控 ===
+  const po=await(await fetch('/api/v2/positions/open')).json();
+  $('pn').textContent=po.length+'对持仓';
+  if(po.length>0){
+    let h='<table><thead><tr>'+
+      '<th>交易对</th><th>方向</th>'+
+      '<th title="入场时Z值">入场Z</th>'+
+      '<th title="当前Z值">当前Z</th>'+
+      '<th title="止盈Z阈值">Z止盈</th>'+
+      '<th title="止损Z阈值">Z止损</th>'+
+      '<th>主腿数量</th><th>对冲腿数量</th>'+
+      '<th>名义金额</th>'+
+      '<th title="净暴露≈0为完美对冲">净暴露</th>'+
+      '<th>未实现PnL</th>'+
+      '<th>持仓时间</th>'+
+      '</tr></thead><tbody>';
+    po.forEach(p=>{
+      const d=p.direction&&p.direction.includes('long')?'<span class="tg tg-l">多A空B</span>':'<span class="tg tg-s">空A多B</span>';
+      const entryDate=new Date(p.entry_time||0);
+      const holdMin=Math.round((Date.now()-entryDate.getTime())/60000);
+      const holdStr=holdMin>1440?Math.round(holdMin/1440)+'天':holdMin>60?Math.round(holdMin/60)+'时':holdMin+'分';
+      h+='<tr>'+
+        '<td><b>'+p.pair_key+'</b></td>'+
+        '<td>'+d+'</td>'+
+        '<td>'+((p.entry_z||0).toFixed(2))+'</td>'+
+        '<td class="'+C(p.current_z||0)+'"><b>'+((p.current_z||0).toFixed(2))+'</b></td>'+
+        '<td class="g">'+((p.z_exit||0).toFixed(2))+'</td>'+
+        '<td class="r">'+((p.z_stop||0).toFixed(2))+'</td>'+
+        '<td>'+((p.qty_a||0).toFixed(4))+'</td>'+
+        '<td>'+((p.qty_b||0).toFixed(4))+'</td>'+
+        '<td>'+(p.notional||0)+' U</td>'+
+        '<td class="g">≈0</td>'+
+        '<td class="'+C(p.unrealized_pnl||0)+'"><b>'+S(p.unrealized_pnl||0)+'</b></td>'+
+        '<td class="dm">'+holdStr+'</td></tr>';
+    });h+='</tbody></table>';$('ps').innerHTML=h;
+  }else{$('ps').innerHTML='<div class="em">暂无持仓 — 等待Z-Score超过入场阈值触发</div>';}
+
+  // === 交易记录 ===
+  const T=await(await fetch('/api/v2/positions/history?days=7')).json();
+  if(T.length>0){
+    let h='<table><thead><tr><th>交易对</th><th>方向</th><th>PnL</th><th>PnL%</th><th>平仓原因</th><th>入场</th><th>出场</th></tr></thead><tbody>';
+    T.forEach(t=>{h+='<tr>'+
+      '<td><b>'+t.pair_key+'</b></td>'+
+      '<td>'+(t.direction||'-')+'</td>'+
+      '<td class="'+C(t.pnl)+'"><b>'+S(t.pnl)+'</b></td>'+
+      '<td class="'+C(t.pnl_pct)+'">'+(t.pnl_pct||0).toFixed(2)+'%</td>'+
+      '<td><span class="tg '+(t.exit_reason==='take_profit'?'tg-ok':t.exit_reason==='stop_loss'?'tg-e':'tg-w')+'">'+(t.exit_reason||'-')+'</span></td>'+
+      '<td class="dm">'+(t.entry_time||'').substring(5,16)+'</td>'+
+      '<td class="dm">'+(t.exit_time||'').substring(5,16)+'</td></tr>';
+    });h+='</tbody></table>';$('tr').innerHTML=h;
+  }
+
+  // === 系统日志 ===
+  try{
+    const logs=await(await fetch('/api/v2/system/logs?level=WARNING&limit=20')).json();
+    if(logs&&logs.length>0){
+      $('lg').innerHTML=logs.map(l=>'<div class="e"><span class="ts">'+(l.timestamp||'').substring(11,19)+'</span>'+(l.level==='ERROR'?'<span class="r">':'<span class="y">')+'['+l.level+']</span> '+l.message+'</div>').join('');
+    }else{$('lg').innerHTML='<div class="em">暂无警告/错误</div>';}
+  }catch(e){$('lg').innerHTML='<div class="em">日志加载中...</div>';}
+
+}catch(e){console.error('Dashboard error:',e);}}
+
+F();setInterval(F,5000);
+</script>
+</body></html>
