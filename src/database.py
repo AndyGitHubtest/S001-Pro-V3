@@ -406,6 +406,19 @@ class DatabaseManager:
             conn.commit()
             logger.info(f"Position closed: {pair_key}, PnL: {trade.pnl:.2f}")
     
+    def delete_position(self, pair_key: str):
+        """
+        删除持仓记录 - 用于同步时清除交易所已平但本地仍存在的幽灵持仓
+        铁律: 以交易所为准
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM positions WHERE pair_key = ? AND status = 'open'
+            """, (pair_key,))
+            conn.commit()
+            logger.warning(f"🗑️ Deleted ghost position from DB: {pair_key}")
+    
     def get_open_positions(self, pool: Optional[str] = None) -> List[PositionRecord]:
         """获取当前持仓"""
         with self._get_connection() as conn:

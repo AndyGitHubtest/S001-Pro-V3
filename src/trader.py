@@ -625,44 +625,69 @@ class Trader:
     
     def sync_positions(self) -> Dict:
         """
-        同步持仓 - 对比本地状态和交易所实际持仓
-        返回差异报告
+        同步持仓 - 以交易所为准，修复本地状态
+        
+        铁律: 所有状态以交易所为唯一真相源
         """
-        logger.info("Syncing positions with exchange")
+        logger.info("Syncing positions with exchange (exchange is source of truth)")
         
         db_positions = self.db.get_open_positions()
         discrepancies = []
         
+        # 获取交易所所有持仓
+        exchange_positions = self.api.exchange.fetch_positions()
+        active_exchange_positions = {
+            p['symbol']: p for p in exchange_positions 
+            if float(p.get('contracts', 0)) != 0
+        }
+        
+        logger.info(f"Exchange positions: {len(active_exchange_positions)}, Local positions: {len(db_positions)}")
+        
         for pos in db_positions:
-            # 检查A边
-            exch_pos_a = self.api.get_position(pos.symbol_a)
-            exch_pos_b = self.api.get_position(pos.symbol_b)
+            # 检查该配对在交易所是否还存在
+            has_position_a = pos.symbol_a in active_exchange_positions
+            has_position_b = pos.symbol_b in active_exchange_positions
             
-            if not exch_pos_a and not exch_pos_b:
-                # 交易所无持仓，本地有 -> 标记为已平仓
-                logger.warning(f"Position {pos.pair_key} closed externally")
+            if not has_position_a and not has_position_b:
+                # 🚨 交易所无持仓，本地有 -> 立即删除本地记录
+                logger.warning(f"🚨 {pos.pair_key}: Exchange=NONE, Local=OPEN -> Deleting local record")
+                self.db.delete_position(pos.pair_key)  # 需要添加这个方法
                 discrepancies.append({
                     'pair_key': pos.pair_key,
-                    'issue': 'closed_externally',
-                    'local': pos.status,
-                    'exchange': 'none'
+                    'issue': 'deleted_local_ghost_position',
+                    'action': 'local_record_removed'
                 })
             
-            elif exch_pos_a and exch_pos_b:
+            elif has_position_a and has_position_b:
                 # 检查方向是否一致
+                exch_a = active_exchange_positions[pos.symbol_a]
+                exch_b = active_exchange_positions[pos.symbol_b]
                 expected_side_a = 'long' if pos.direction == 'long_spread' else 'short'
-                if exch_pos_a['side'] != expected_side_a:
-                    logger.error(f"Side mismatch for {pos.symbol_a}")
+                
+                if exch_a['side'] != expected_side_a:
+                    logger.error(f"🚨 Side mismatch for {pos.symbol_a}: Exchange={exch_a['side']}, Expected={expected_side_a}")
                     discrepancies.append({
                         'pair_key': pos.pair_key,
                         'issue': 'side_mismatch',
-                        'symbol': pos.symbol_a
+                        'symbol': pos.symbol_a,
+                        'action': 'manual_review_required'
                     })
+                else:
+                    # 更新当前价格和Z值
+                    current_price_a = exch_a['markPrice'] or exch_a['entryPrice']
+                    current_price_b = exch_b['markPrice'] or exch_b['entryPrice']
+                    # 这里可以更新 unrealized_pnl
+        
+        # 再次验证
+        remaining_local = len(self.db.get_open_positions())
         
         return {
             'checked': len(db_positions),
             'discrepancies': discrepancies,
-            'synced': len(discrepancies) == 0
+            'local_positions_before': len(db_positions),
+            'local_positions_after': remaining_local,
+            'synced': remaining_local == len(active_exchange_positions),
+            'exchange_positions': list(active_exchange_positions.keys())
         }
     
     def get_account_summary(self) -> Dict:
