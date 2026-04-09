@@ -50,6 +50,8 @@ class PoolConfig:
     z_exit_default: float
     z_stop_offset_default: float
     max_per_day: int = 0  # 仅次池使用
+    capital_per_position: float = 100.0  # 单对金额
+    leverage: int = 5  # 杠杆倍数
 
 
 @dataclass
@@ -60,20 +62,45 @@ class OptimizationConfig:
 
 
 @dataclass
+class RiskConfig:
+    max_total_margin: float = 300.0
+    max_single_position: float = 100.0
+    max_leverage: int = 5
+    max_daily_loss_usdt: float = 50.0
+    max_position_loss_ratio: float = 0.02
+    circuit_breaker: Dict[str, Any] = field(default_factory=lambda: {
+        "enabled": True,
+        "consecutive_losses": 3,
+        "cooldown_minutes": 60
+    })
+
+
+@dataclass
+class ExchangeConfig:
+    name: str = "binance"
+    sandbox: bool = False
+    api_key: str = ""
+    api_secret: str = ""
+
+
+@dataclass
 class TradingConfig:
     primary: PoolConfig = field(default_factory=lambda: PoolConfig(
         timeframe="15m", top_n=30, capital_ratio=0.7,
-        z_entry_default=2.5, z_exit_default=0.5, z_stop_offset_default=2.0
+        z_entry_default=2.5, z_exit_default=0.5, z_stop_offset_default=2.0,
+        capital_per_position=100, leverage=5
     ))
     secondary: PoolConfig = field(default_factory=lambda: PoolConfig(
         timeframe="5m", top_n=10, capital_ratio=0.3,
         z_entry_default=2.0, z_exit_default=0.4, z_stop_offset_default=1.5,
-        max_per_day=3
+        max_per_day=3, capital_per_position=100, leverage=5
     ))
     filter: Dict[str, Any] = field(default_factory=lambda: {"timeframe": "30m", "threshold": 1.0})
     max_positions: int = 5
+    max_concurrent_per_pool: int = 2
     min_per_pair: float = 50.0
     max_per_pair_ratio: float = 0.20
+    max_daily_loss_ratio: float = 0.05
     loop_interval: int = 5
 
 
@@ -95,9 +122,11 @@ class NotificationConfig:
 @dataclass
 class Config:
     version: str = "3.0.0"
+    exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     data_core: Dict[str, Any] = field(default_factory=dict)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    risk: RiskConfig = field(default_factory=RiskConfig)
     layer1: Layer1Config = field(default_factory=Layer1Config)
     layer2: Layer2Config = field(default_factory=Layer2Config)
     layer3: Layer3Config = field(default_factory=Layer3Config)
@@ -131,6 +160,15 @@ class Config:
         if 'version' in data:
             config.version = data['version']
         
+        if 'exchange' in data:
+            ex = data['exchange']
+            config.exchange = ExchangeConfig(
+                name=ex.get('name', 'binance'),
+                sandbox=ex.get('sandbox', False),
+                api_key=ex.get('api_key', ''),
+                api_secret=ex.get('api_secret', '')
+            )
+        
         if 'data_core' in data:
             config.data_core = data['data_core']
         
@@ -144,9 +182,22 @@ class Config:
                 secondary=PoolConfig(**t.get('secondary', {})),
                 filter=t.get('filter', {}),
                 max_positions=t.get('max_positions', 5),
+                max_concurrent_per_pool=t.get('max_concurrent_per_pool', 2),
                 min_per_pair=t.get('min_per_pair', 50.0),
                 max_per_pair_ratio=t.get('max_per_pair_ratio', 0.20),
+                max_daily_loss_ratio=t.get('max_daily_loss_ratio', 0.05),
                 loop_interval=t.get('loop_interval', 5)
+            )
+        
+        if 'risk' in data:
+            r = data['risk']
+            config.risk = RiskConfig(
+                max_total_margin=r.get('max_total_margin', 300.0),
+                max_single_position=r.get('max_single_position', 100.0),
+                max_leverage=r.get('max_leverage', 5),
+                max_daily_loss_usdt=r.get('max_daily_loss_usdt', 50.0),
+                max_position_loss_ratio=r.get('max_position_loss_ratio', 0.02),
+                circuit_breaker=r.get('circuit_breaker', {})
             )
         
         if 'layer1' in data:
@@ -179,7 +230,24 @@ class Config:
             config.web = data['web']
         
         if 'notification' in data:
-            config.notification = NotificationConfig(**data['notification'])
+            n = data['notification']
+            # 处理telegram嵌套结构
+            telegram_cfg = n.get('telegram', {})
+            if telegram_cfg:
+                enabled = telegram_cfg.get('enabled', False)
+                bot_token = telegram_cfg.get('bot_token', '')
+                chat_id = telegram_cfg.get('chat_id', '')
+            else:
+                enabled = n.get('enabled', False)
+                bot_token = n.get('bot_token', '')
+                chat_id = n.get('chat_id', '')
+            
+            config.notification = NotificationConfig(
+                enabled=enabled,
+                bot_token=bot_token,
+                chat_id=chat_id,
+                events=n.get('events', ["position_opened", "position_closed", "error"])
+            )
         
         if 'logging' in data:
             config.logging = data['logging']
