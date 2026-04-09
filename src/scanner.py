@@ -128,13 +128,17 @@ class Scanner:
             logger.info(f"K线数据库已连接")
             cursor = conn.cursor()
             
-            # 获取所有有数据的币种 (Data-Core schema: ts, interval)
+            # 获取流动性最好的币种 (限制数量以控制扫描时间)
+            # 按数据量排序，优先选择交易活跃的币种
             cursor.execute("""
-                SELECT DISTINCT symbol FROM klines 
-                ORDER BY symbol
-                LIMIT 50
+                SELECT symbol, COUNT(*) as cnt FROM klines 
+                WHERE ts > (SELECT MAX(ts) - 86400000 FROM klines)
+                GROUP BY symbol
+                ORDER BY cnt DESC
+                LIMIT 20
             """)
-            symbols = [row[0] for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+            symbols = [row[0] for row in rows]
             
             logger.info(f"从共享数据库获取到 {len(symbols)} 个币种")
             return symbols
