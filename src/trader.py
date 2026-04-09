@@ -68,8 +68,8 @@ class ExchangeAPI:
                 'secret': api_secret,
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'future',
-                    'adjustForTimeDifference': True
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 10000,
                 }
             })
             
