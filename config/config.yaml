@@ -65,9 +65,9 @@ trading:
 
 # === Layer 1: Statistical Foundation ===
 layer1:
-  corr_median_min: 0.65
-  coint_p_max: 0.1
-  adf_p_max: 0.1
+  corr_median_min: 0.60     # 放宽: 0.65 -> 0.60
+  coint_p_max: 0.2          # 放宽: 0.1 -> 0.2
+  adf_p_max: 0.15           # 放宽: 0.1 -> 0.15
 
 # === Layer 2: Mean Reversion Stability ===
 layer2:
