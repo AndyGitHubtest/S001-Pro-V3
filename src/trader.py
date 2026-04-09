@@ -5,6 +5,7 @@ S001-Pro V3 交易执行模块
 
 import ccxt
 import logging
+import os
 from typing import Optional, Dict, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,10 +54,18 @@ class ExchangeAPI:
     def _init_exchange(self):
         """初始化交易所连接"""
         try:
+            # 从配置或环境变量获取API Key
+            api_key = self.cfg.exchange.api_key or os.getenv('BINANCE_API_KEY', '')
+            api_secret = self.cfg.exchange.api_secret or os.getenv('BINANCE_API_SECRET', '')
+            
+            if not api_key or not api_secret:
+                logger.error("❌ API Key未配置! 请检查config/config.yaml或环境变量")
+                raise ValueError("API Key not configured")
+            
             # 使用Binance USDT永续合约
             self.exchange = ccxt.binanceusdm({
-                'apiKey': self.cfg.data_core.get('api_key', ''),
-                'secret': self.cfg.data_core.get('api_secret', ''),
+                'apiKey': api_key,
+                'secret': api_secret,
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',
@@ -65,13 +74,14 @@ class ExchangeAPI:
             })
             
             # 测试网络
-            if self.cfg.data_core.get('testnet', False):
+            if self.cfg.exchange.sandbox:
                 self.exchange.set_sandbox_mode(True)
+                logger.info("🧪 Sandbox mode enabled")
             
-            logger.info("Exchange API initialized")
+            logger.info("✅ Exchange API initialized")
             
         except Exception as e:
-            logger.error(f"Failed to init exchange: {e}")
+            logger.error(f"❌ Failed to init exchange: {e}")
             raise
     
     def get_balance(self) -> Dict:

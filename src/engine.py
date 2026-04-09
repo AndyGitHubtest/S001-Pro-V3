@@ -227,10 +227,12 @@ class SignalGenerator:
 class PositionManager:
     """持仓管理器"""
     
-    def __init__(self):
+    def __init__(self, trader_execute_callback=None, trader_exit_callback=None):
         self.cfg = get_config()
         self.db = get_db()
         self.positions = {}  # pair_key -> PositionRecord
+        self.trader_execute = trader_execute_callback  # 真实开仓回调
+        self.trader_exit = trader_exit_callback  # 真实平仓回调
     
     def load_positions(self):
         """从数据库加载持仓"""
@@ -265,8 +267,13 @@ class PositionManager:
     
     def open_position(self, pair_key: str, pool: str, symbol_a: str, symbol_b: str,
                       direction: str, entry_z: float, price_a: float, price_b: float,
-                      qty_a: float, qty_b: float, notional: float, params: Dict):
-        """开仓"""
+                      qty_a: float, qty_b: float, notional: float, params: Dict) -> bool:
+        """开仓 - 先执行真实下单，成功后更新数据库
+        
+        Returns:
+            bool: 是否成功开仓
+        """
+        # 创建PositionRecord
         pos = PositionRecord(
             pair_key=pair_key,
             pool=pool,
@@ -285,13 +292,27 @@ class PositionManager:
             z_entry=params['z_entry'],
             z_exit=params['z_exit'],
             z_stop=params['z_stop'],
-            status='open'
+            status='pending'  # 先标记为pending
         )
         
+        # 第1步: 执行真实下单 (如果有trader回调)
+        if self.trader_execute:
+            logger.info(f"Executing real order for {pair_key}...")
+            success = self.trader_execute(pos)
+            if not success:
+                logger.error(f"❌ Real order failed for {pair_key}, aborting")
+                return False
+            logger.info(f"✅ Real order executed for {pair_key}")
+        else:
+            logger.warning(f"⚠️ No trader_execute callback, skipping real order for {pair_key}")
+        
+        # 第2步: 真实下单成功后，更新数据库
+        pos.status = 'open'
         self.db.open_position(pos)
         self.positions[pair_key] = pos
         
-        logger.info(f"Position opened: {pair_key} {direction} at Z={entry_z:.2f}")
+        logger.info(f"✅ Position opened: {pair_key} {direction} at Z={entry_z:.2f}")
+        return True
     
     def update_position(self, pair_key: str, current_z: float, 
                         price_a: float, price_b: float) -> float:
@@ -323,12 +344,27 @@ class PositionManager:
     
     def close_position(self, pair_key: str, exit_price_a: float, 
                        exit_price_b: float, exit_z: float, reason: str) -> float:
-        """平仓，返回实现盈亏"""
+        """平仓 - 先执行真实平仓，成功后更新数据库
+        
+        Returns:
+            float: 实现盈亏
+        """
         pos = self.positions.get(pair_key)
         if not pos:
             return 0.0
         
-        # 计算实现盈亏
+        # 第1步: 执行真实平仓 (如果有trader回调)
+        if self.trader_exit:
+            logger.info(f"Executing real exit for {pair_key}...")
+            success = self.trader_exit(pos)
+            if not success:
+                logger.error(f"❌ Real exit failed for {pair_key}")
+                return 0.0
+            logger.info(f"✅ Real exit executed for {pair_key}")
+        else:
+            logger.warning(f"⚠️ No trader_exit callback, skipping real exit for {pair_key}")
+        
+        # 第2步: 计算实现盈亏
         if pos.direction == 'long_spread':
             pnl_a = (exit_price_a - pos.entry_price_a) * pos.qty_a
             pnl_b = (pos.entry_price_b - exit_price_b) * pos.qty_b
@@ -338,7 +374,7 @@ class PositionManager:
         
         realized_pnl = pnl_a + pnl_b
         
-        # 创建交易记录
+        # 第3步: 创建交易记录
         from database import TradeRecord
         trade = TradeRecord(
             pair_key=pair_key,
@@ -361,13 +397,13 @@ class PositionManager:
             pnl_pct=realized_pnl / pos.notional * 100 if pos.notional > 0 else 0
         )
         
-        # 更新数据库
+        # 第4步: 更新数据库
         self.db.close_position(pair_key, trade)
         
-        # 移除内存持仓
+        # 第5步: 移除内存持仓
         del self.positions[pair_key]
         
-        logger.info(f"Position closed: {pair_key} PnL={realized_pnl:.2f} reason={reason}")
+        logger.info(f"✅ Position closed: {pair_key} PnL={realized_pnl:.2f} reason={reason}")
         return realized_pnl
     
     def get_all_positions(self) -> List[PositionRecord]:
@@ -384,11 +420,18 @@ class PositionManager:
 class Engine:
     """引擎 - 整合数据、信号、持仓"""
     
-    def __init__(self):
+    def __init__(self, trader=None):
         self.data_reader = DataReader()
         self.signal_gen = SignalGenerator()
-        self.position_mgr = PositionManager()
+        # 如果提供了trader，设置下单回调
+        entry_callback = trader.execute_entry if trader else None
+        exit_callback = trader.execute_exit if trader else None
+        self.position_mgr = PositionManager(
+            trader_execute_callback=entry_callback,
+            trader_exit_callback=exit_callback
+        )
         self.cfg = get_config()
+        self.trader = trader
     
     def initialize(self):
         """初始化"""

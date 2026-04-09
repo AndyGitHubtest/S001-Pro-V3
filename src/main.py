@@ -44,8 +44,9 @@ class Strategy:
         self.cfg = get_config()
         self.db = get_db()
         self.scanner = Scanner()
-        self.engine = Engine()
+        # 先创建Trader，再传给Engine
         self.trader = Trader()
+        self.engine = Engine(trader=self.trader)
         self.monitor = Monitor()
         
         self.running = False
