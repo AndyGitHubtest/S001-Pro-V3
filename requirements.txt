@@ -1,22 +1,28 @@
-# S001-Pro V3 Dependencies
+# S001-Pro V3 依赖
+# Python 3.10+
 
-# Web Framework
-fastapi>=0.104.0
-uvicorn>=0.24.0
-
-# Data & Math
+# 核心依赖
+ccxt>=4.0.0
 numpy>=1.24.0,<2.1
 pandas>=2.0.0
-scipy>=1.11.0
-
-# Exchange API
-ccxt>=4.2.0
-
-# Config
+requests>=2.31.0
 pyyaml>=6.0.1
 
-# HTTP Client (for Telegram)
-requests>=2.31.0
+# Web监控
+fastapi>=0.104.0
+uvicorn>=0.24.0
+websockets>=12.0
 
-# Database (SQLite3 is built-in)
-# No additional packages needed
+# 统计/科学计算
+scipy>=1.11.0
+statsmodels>=0.14.0
+
+# 数据库
+# sqlite3 (内置)
+
+# 可选: 性能优化
+# numba>=0.58.0  # 如需JIT加速可启用
+
+# 开发/测试
+pytest>=7.4.0
+pytest-asyncio>=0.21.0

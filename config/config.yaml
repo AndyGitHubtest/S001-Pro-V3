@@ -1,6 +1,13 @@
 # S001-Pro V3 Configuration
 version: "3.0.0"
 
+# === Exchange (Binance) ===
+exchange:
+  name: "binance"
+  sandbox: false              # 实盘模式
+  api_key: ""                 # 从环境变量 BINANCE_API_KEY 读取
+  api_secret: ""              # 从环境变量 BINANCE_API_SECRET 读取
+  
 # === Data Source (Data-Core API) ===
 data_core:
   api_url: "http://localhost:8080/api"
@@ -13,23 +20,27 @@ database:
   state_db: "data/strategy.db"      # 策略状态，读写
   cache_size: 500
 
-# === Trading Parameters ===
+# === Trading Parameters (1000 USDT 小资金配置) ===
 trading:
-  # 主池 (15m)
+  # 主池 (15m) - 70%资金
   primary:
     timeframe: "15m"
     top_n: 30
-    capital_ratio: 0.7
+    capital_ratio: 0.7          # 700 USDT
+    capital_per_position: 100   # 每对100 USDT (5x杠杆 = 500 USDT名义)
+    leverage: 5                 # 保守杠杆
     z_entry_default: 2.5
     z_exit_default: 0.5
     z_stop_offset_default: 2.0
   
-  # 次池 (5m)
+  # 次池 (5m) - 30%资金
   secondary:
     timeframe: "5m"
     top_n: 10
-    capital_ratio: 0.3
-    max_per_day: 3
+    capital_ratio: 0.3          # 300 USDT
+    capital_per_position: 100
+    leverage: 5
+    max_per_day: 2              # 减少交易频率
     z_entry_default: 2.0
     z_exit_default: 0.4
     z_stop_offset_default: 1.5
@@ -39,11 +50,13 @@ trading:
     timeframe: "30m"
     threshold: 1.0  # |Z_30m| < 1.0
   
-  # 通用
-  max_positions: 5
-  min_per_pair: 50
-  max_per_pair_ratio: 0.20
-  loop_interval: 5  # seconds
+  # 通用 - 小资金严格限制
+  max_positions: 3              # 最多3对，控制总风险
+  max_concurrent_per_pool: 2    # 每池最多2对
+  min_per_pair: 30              # 降低最小下单量
+  max_per_pair_ratio: 0.10      # 每对最多10%总资金 (100 USDT)
+  max_daily_loss_ratio: 0.05    # 日亏损上限5% (50 USDT)
+  loop_interval: 10             # 10秒循环 (降低API调用)
 
 # === Layer 1: Statistical Foundation ===
 layer1:
@@ -95,6 +108,23 @@ optimization:
 output:
   min_pf: 1.3
   min_profit: 0
+
+# === Risk Control (1000 USDT 硬限制) ===
+risk:
+  # 资金硬限制
+  max_total_margin: 300        # 最大保证金 300 USDT
+  max_single_position: 100     # 单对最大 100 USDT
+  max_leverage: 5              # 最大杠杆 5x
+  
+  # 损失限制
+  max_daily_loss_usdt: 50      # 日亏损上限 50 USDT
+  max_position_loss_ratio: 0.02 # 单对亏损2%强制平仓
+  
+  # 熔断机制
+  circuit_breaker:
+    enabled: true
+    consecutive_losses: 3      # 连续3单亏损熔断
+    cooldown_minutes: 60       # 冷却60分钟
 
 # === Web Monitor ===
 web:

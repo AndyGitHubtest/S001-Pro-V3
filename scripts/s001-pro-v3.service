@@ -1,0 +1,30 @@
+[Unit]
+Description=S001-Pro V3 Statistical Arbitrage Strategy
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/strategies/S001-Pro-V3
+Environment=PYTHONPATH=/home/ubuntu/strategies/S001-Pro-V3/src
+Environment=BINANCE_API_KEY=your_api_key_here
+Environment=BINANCE_API_SECRET=your_api_secret_here
+# 可选: Telegram通知
+# Environment=TELEGRAM_BOT_TOKEN=your_bot_token
+# Environment=TELEGRAM_CHAT_ID=your_chat_id
+
+ExecStart=/home/ubuntu/strategies/S001-Pro-V3/venv/bin/python src/main.py
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=30
+
+# 资源限制 (适合小资金策略)
+MemoryLimit=512M
+CPUQuota=50%
+
+# 日志
+StandardOutput=append:/home/ubuntu/strategies/S001-Pro-V3/logs/strategy.log
+StandardError=append:/home/ubuntu/strategies/S001-Pro-V3/logs/strategy_error.log
+
+[Install]
+WantedBy=multi-user.target
