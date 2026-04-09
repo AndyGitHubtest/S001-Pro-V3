@@ -176,12 +176,13 @@ class Scanner:
             logger.info("K线数据库已连接")
             cursor = conn.cursor()
             
-            # SQL预筛: 5重条件
-            # 1. 24h数据完整 (≥1000条1m)
+            # SQL预筛: 6重条件
+            # 1. 24h数据完整 (≥1300条 ≈ 22h连续)
             # 2. 24h USDT成交量 ≥ 500万
-            # 3. 历史数据 ≥ 30天 (43200条)
-            # 4. 24h有足够波动 (max-min)/avg > 1%  — 排除稳定币/死币
-            # 5. 24h数据连续 (≥1300条 ≈ 22h, 排除停牌/退市)
+            # 3. 历史数据 ≥ 60天 (86400条) — 排除新币
+            # 4. 24h有足够波动 (max-min)/avg > 1% — 排除稳定币/死币
+            # 5. 非停牌/退市 (24h内有数据)
+            # 6. 非新币 (上线<60天的统计特征不稳定)
             min_vol = self.PRE_FILTER_MIN_VOL_USDT
             cursor.execute("""
                 SELECT s.symbol, s.cnt, s.vol_usdt, s.volatility
@@ -201,7 +202,7 @@ class Scanner:
                     SELECT symbol, COUNT(*) as total 
                     FROM klines 
                     GROUP BY symbol
-                    HAVING total >= 43200
+                    HAVING total >= 86400
                 ) t ON s.symbol = t.symbol
                 ORDER BY s.vol_usdt DESC
             """, (min_vol,))
