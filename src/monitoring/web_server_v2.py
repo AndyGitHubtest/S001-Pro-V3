@@ -189,20 +189,144 @@ class WebServerV2:
         return app
     
     def _render_spa(self) -> str:
-        """渲染SPA主页面"""
+        """完整监控面板 — 暗色主题，入池配对全字段，持仓/交易/漏斗，5秒自动刷新"""
         return '''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>S001-Pro V3 Dashboard</title>
-    <link rel="stylesheet" href="/static/css/main.css">
-</head>
-<body>
-    <div id="app"></div>
-    <script src="/static/js/app.js"></script>
-</body>
-</html>'''
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>S001-Pro V3 | Statistical Arbitrage</title>
+<style>
+:root{--bg:#0b0f19;--c:#111827;--bd:#1e293b;--t:#e2e8f0;--dm:#64748b;--g:#10b981;--r:#ef4444;--y:#f59e0b;--cy:#06b6d4;--bl:#3b82f6}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Inter',system-ui,sans-serif;background:var(--bg);color:var(--t);font-size:13px}
+.w{max-width:1440px;margin:0 auto;padding:12px}
+.hdr{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--bd);margin-bottom:14px}
+.hdr h1{font-size:17px;font-weight:700;background:linear-gradient(135deg,var(--g),var(--cy));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hdr .m{text-align:right;font-size:11px;color:var(--dm)}.hdr .m b{color:var(--g)}
+.hdr .lv{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--g);margin-right:3px;animation:p 2s infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:12px}
+.st{background:var(--c);border:1px solid var(--bd);border-radius:8px;padding:12px;text-align:center}
+.st .v{font-size:20px;font-weight:700;margin:2px 0}.st .l{font-size:9px;color:var(--dm);text-transform:uppercase;letter-spacing:.8px}
+.cd{background:var(--c);border:1px solid var(--bd);border-radius:8px;padding:14px;margin-bottom:10px}
+.cd .tt{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
+.cd .tt h2{font-size:13px;font-weight:600}.cd .tt .bg{font-size:10px;background:rgba(16,185,129,.15);color:var(--g);padding:2px 7px;border-radius:10px}
+.sc{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+thead th{text-align:left;padding:7px 5px;color:var(--dm);font-weight:500;font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid var(--bd);position:sticky;top:0;background:var(--c);white-space:nowrap}
+tbody td{padding:6px 5px;border-bottom:1px solid rgba(30,41,59,.4);white-space:nowrap}
+tbody tr:hover{background:rgba(30,41,59,.5)}
+.g{color:var(--g)}.r{color:var(--r)}.y{color:var(--y)}.cy{color:var(--cy)}.bl{color:var(--bl)}.dm{color:var(--dm)}
+.tg{display:inline-block;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:600}
+.tg-l{background:rgba(16,185,129,.15);color:var(--g)}.tg-s{background:rgba(239,68,68,.15);color:var(--r)}
+.fn{display:flex;align-items:center;gap:3px;flex-wrap:wrap}.fn .sg{background:var(--bd);padding:3px 8px;border-radius:5px;text-align:center;min-width:55px}.fn .sg .n{font-size:15px;font-weight:700;color:#fff}.fn .sg .lb{font-size:8px;color:var(--dm)}.fn .ar{color:var(--dm);font-size:14px}
+.em{text-align:center;padding:20px;color:var(--dm);font-size:12px}
+th[title]{cursor:help}
+</style></head><body><div class="w">
+<div class="hdr"><h1>S001-Pro V3 Statistical Arbitrage</h1><div class="m"><span class="lv"></span><b>LIVE</b><br><span id="ck">-</span></div></div>
+<div class="row" id="sb">
+ <div class="st"><div class="l">持仓</div><div class="v" id="v1">-</div></div>
+ <div class="st"><div class="l">入池配对</div><div class="v cy" id="v2">-</div></div>
+ <div class="st"><div class="l">今日盈亏</div><div class="v" id="v3">-</div></div>
+ <div class="st"><div class="l">未实现</div><div class="v" id="v4">-</div></div>
+ <div class="st"><div class="l">上次扫描</div><div class="v dm" id="v5" style="font-size:13px">-</div></div>
+ <div class="st"><div class="l">下次扫描</div><div class="v dm" id="v6" style="font-size:13px">-</div></div>
+</div>
+<div class="cd"><div class="tt"><h2>🔬 扫描漏斗</h2><span class="bg" id="sd">-</span></div><div class="fn" id="fl"><div class="em">等待扫描...</div></div></div>
+<div class="cd"><div class="tt"><h2>🎯 入池配对</h2><span class="bg" id="pb">0对</span></div><div class="sc" id="pt"><div class="em">等待扫描...</div></div></div>
+<div class="cd"><div class="tt"><h2>📊 当前持仓</h2><span class="bg" id="pn">0</span></div><div class="sc" id="ps"><div class="em">暂无持仓</div></div></div>
+<div class="cd"><div class="tt"><h2>📋 交易记录</h2></div><div class="sc" id="tr"><div class="em">暂无交易</div></div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id),C=v=>v>=0?'g':'r',S=v=>(v>=0?'+':'')+v.toFixed(2);
+function ms(n,l){return '<div class="sg"><div class="n">'+n+'</div><div class="lb">'+l+'</div></div>'}
+function ar(){return '<span class="ar">→</span>'}
+async function F(){try{
+$('ck').textContent=new Date().toLocaleString('zh-CN',{hour12:false});
+// status
+const s=await(await fetch('/api/v2/dashboard/summary')).json();
+$('v1').textContent=s.operation?.active_pairs||0;
+$('v3').textContent=S(s.finance?.today_pnl||0);$('v3').className='v '+C(s.finance?.today_pnl||0);
+$('v4').textContent=S(s.finance?.unrealized_pnl||0);$('v4').className='v '+C(s.finance?.unrealized_pnl||0);
+$('v5').textContent=s.operation?.last_scan||'-';$('v6').textContent=s.operation?.next_scan||'-';
+// pairs
+const P=await(await fetch('/api/v2/market/pairs?pool=primary')).json();
+$('v2').textContent=P.length;$('pb').textContent=P.length+'对';
+if(P.length>0){let h='<table><thead><tr>'+
+'<th>#</th><th>配对 A / B</th>'+
+'<th title="综合评分0~1">Score</th>'+
+'<th title="盈亏比=总盈利÷总亏损 ≥1.3入池">PF</th>'+
+'<th title="夏普比率=收益÷风险">Sharpe</th>'+
+'<th title="回测总收益">Return</th>'+
+'<th title="最大回撤">MaxDD</th>'+
+'<th title="Z-Score进场阈值">Z入场</th>'+
+'<th title="Z-Score止盈阈值">Z止盈</th>'+
+'<th title="Z-Score止损阈值">Z止损</th>'+
+'<th title="回测交易笔数">笔数</th>'+
+'<th title="滚动相关系数中位数">Corr</th>'+
+'<th title="协整p值 越小越好">Coint</th>'+
+'<th title="半衰期(K线根数) 越小回归越快">HL</th>'+
+'<th title="赫斯特指数 <0.5=均值回归">Hurst</th>'+
+'<th title="最后更新时间">更新</th>'+
+'</tr></thead><tbody>';
+P.forEach((p,i)=>{
+const pf=Math.min(p.pf,99.99);
+const pc=pf>=2?'g':pf>=1.5?'cy':pf>=1.3?'y':'r';
+const hc=(p.hurst||0)<0.45?'g':(p.hurst||0)<0.55?'y':'r';
+const rc=p.total_return>0?'g':'r';
+h+='<tr><td class="dm">'+(i+1)+'</td>'+
+'<td><b>'+p.symbol_a.replace('/USDT','')+'</b> <span class="dm">/ '+p.symbol_b.replace('/USDT','')+'</span></td>'+
+'<td><b>'+p.score.toFixed(3)+'</b></td>'+
+'<td class="'+pc+'"><b>'+pf.toFixed(2)+'</b></td>'+
+'<td>'+(p.sharpe?Math.min(p.sharpe,99).toFixed(2):'-')+'</td>'+
+'<td class="'+rc+'">'+(p.total_return||0).toFixed(4)+'</td>'+
+'<td class="r">'+(p.max_dd||0).toFixed(4)+'</td>'+
+'<td class="bl"><b>'+p.z_entry.toFixed(1)+'</b></td>'+
+'<td class="g">'+p.z_exit.toFixed(1)+'</td>'+
+'<td class="r">'+(p.z_stop||0).toFixed(1)+'</td>'+
+'<td>'+p.trades_count+'</td>'+
+'<td>'+(p.corr_median||0).toFixed(3)+'</td>'+
+'<td>'+(p.coint_p||0).toFixed(4)+'</td>'+
+'<td>'+(p.half_life||0).toFixed(1)+'</td>'+
+'<td class="'+hc+'">'+(p.hurst||0).toFixed(3)+'</td>'+
+'<td class="dm" style="font-size:10px">'+(p.updated_at||'').substring(5,16)+'</td></tr>';
+});h+='</tbody></table>';$('pt').innerHTML=h;
+}else{$('pt').innerHTML='<div class="em">⏳ 等待扫描完成...</div>';}
+// scan funnel
+const sc=await(await fetch('/api/v2/market/scan-history?limit=1')).json();
+if(sc.length>0){const f=sc[0];
+$('sd').textContent=(f.duration_ms/1000).toFixed(0)+'s';
+$('fl').innerHTML=ms(f.candidates||'?','候选')+ar()+ms(f.l1_passed||'?','L1统计')+ar()+ms(f.l2_passed||'?','L2稳定')+ar()+ms(f.l3_passed||'?','L3机会')+ar()+ms(f.l3_passed||'?','✅入池');}
+// positions
+const po=await(await fetch('/api/v2/positions/open')).json();
+$('pn').textContent=po.length;
+if(po.length>0){let h='<table><thead><tr><th>配对</th><th>池</th><th>方向</th><th>入场Z</th><th>当前Z</th><th>Z止盈</th><th>Z止损</th><th>数量A</th><th>数量B</th><th>名义</th><th>未实现PnL</th><th>入场时间</th></tr></thead><tbody>';
+po.forEach(p=>{
+const d=p.direction&&p.direction.includes('long')?'<span class="tg tg-l">LONG</span>':'<span class="tg tg-s">SHORT</span>';
+h+='<tr><td><b>'+p.pair_key+'</b></td><td>'+p.pool+'</td><td>'+d+'</td>'+
+'<td>'+((p.entry_z||0).toFixed(2))+'</td>'+
+'<td class="'+C(p.current_z||0)+'"><b>'+((p.current_z||0).toFixed(2))+'</b></td>'+
+'<td class="g">'+((p.z_exit||0).toFixed(2))+'</td>'+
+'<td class="r">'+((p.z_stop||0).toFixed(2))+'</td>'+
+'<td>'+((p.qty_a||0).toFixed(4))+'</td>'+
+'<td>'+((p.qty_b||0).toFixed(4))+'</td>'+
+'<td>'+(p.notional||'-')+'</td>'+
+'<td class="'+C(p.unrealized_pnl||0)+'"><b>'+S(p.unrealized_pnl||0)+'</b></td>'+
+'<td class="dm">'+(p.entry_time||'').substring(0,16)+'</td></tr>';});
+h+='</tbody></table>';$('ps').innerHTML=h;
+}else{$('ps').innerHTML='<div class="em">暂无持仓 — 等待Z-Score触发</div>';}
+// trades
+const T=await(await fetch('/api/v2/positions/history?days=7')).json();
+if(T.length>0){let h='<table><thead><tr><th>配对</th><th>方向</th><th>PnL</th><th>PnL%</th><th>原因</th><th>入场</th><th>出场</th></tr></thead><tbody>';
+T.forEach(t=>{h+='<tr><td><b>'+t.pair_key+'</b></td><td>'+(t.direction||'-')+'</td>'+
+'<td class="'+C(t.pnl)+'"><b>'+S(t.pnl)+'</b></td>'+
+'<td class="'+C(t.pnl_pct)+'">'+(t.pnl_pct||0).toFixed(2)+'%</td>'+
+'<td>'+(t.exit_reason||'-')+'</td>'+
+'<td class="dm">'+(t.entry_time||'').substring(5,16)+'</td>'+
+'<td class="dm">'+(t.exit_time||'').substring(5,16)+'</td></tr>';});
+h+='</tbody></table>';$('tr').innerHTML=h;}
+}catch(e){console.error(e);}}
+F();setInterval(F,5000);
+</script></body></html>'''
     
     # ========== Dashboard API实现 ==========
     def _get_dashboard_summary(self) -> dict:
@@ -391,12 +515,16 @@ class WebServerV2:
                 "direction": p.direction,
                 "symbol_a": p.symbol_a,
                 "symbol_b": p.symbol_b,
-                "qty_a": p.qty_a,
-                "qty_b": p.qty_b,
+                "qty_a": round(p.qty_a, 6) if p.qty_a else 0,
+                "qty_b": round(p.qty_b, 6) if p.qty_b else 0,
                 "entry_price_a": p.entry_price_a,
                 "entry_price_b": p.entry_price_b,
-                "entry_z": p.entry_z,
-                "current_z": p.current_z,
+                "notional": round(p.notional, 2) if p.notional else 0,
+                "entry_z": round(p.entry_z, 3) if p.entry_z else 0,
+                "current_z": round(p.current_z, 3) if p.current_z else 0,
+                "z_entry": round(p.z_entry, 2) if p.z_entry else 0,
+                "z_exit": round(p.z_exit, 2) if p.z_exit else 0,
+                "z_stop": round(p.z_stop, 2) if p.z_stop else 0,
                 "unrealized_pnl": round(p.unrealized_pnl, 2) if p.unrealized_pnl else 0,
                 "entry_time": p.entry_time,
                 "status": p.status
