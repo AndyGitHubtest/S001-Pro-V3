@@ -3,7 +3,7 @@ S001-Pro V3 监控面板 V2 - Web服务器
 支持6页面SPA架构
 """
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from typing import Optional, List
 import logging
@@ -49,18 +49,7 @@ class WebServerV2:
         # 挂载静态文件
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
         
-        # ========== 页面路由 ==========
-        @app.get("/", response_class=HTMLResponse)
-        async def index():
-            """主页面 - SPA入口"""
-            return self._render_spa()
-        
-        @app.get("/{path:path}", response_class=HTMLResponse)
-        async def spa_router(path: str):
-            """SPA路由 - 所有路径返回同一页面"""
-            return self._render_spa()
-        
-        # ========== API v2 路由 ==========
+        # ========== API v2 路由 (必须先定义，避免被SPA路由捕获) ==========
         # Dashboard APIs
         @app.get("/api/v2/dashboard/summary")
         async def dashboard_summary():
@@ -181,6 +170,20 @@ class WebServerV2:
         async def v1_status():
             """V1状态API - 向后兼容"""
             return self._get_dashboard_summary()
+        
+        # ========== SPA路由 (放在最后，作为fallback) ==========
+        @app.get("/", response_class=HTMLResponse)
+        async def index():
+            """主页面 - SPA入口"""
+            return self._render_spa()
+        
+        @app.get("/{path:path}", response_class=HTMLResponse)
+        async def spa_router(path: str):
+            """SPA路由 - 所有非API路径返回同一页面"""
+            # 排除API路径和静态文件
+            if path.startswith('api/') or path.startswith('static/'):
+                raise HTTPException(status_code=404)
+            return self._render_spa()
         
         self.app = app
         return app
