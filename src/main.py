@@ -85,7 +85,13 @@ class Strategy:
             db_manager = DatabaseManager(self.cfg.database.state_db)
             log_info("Strategy", "数据库初始化完成", db_path=self.cfg.database.state_db)
         
-        # 3. 恢复遗留订单（重启后的关键步骤）
+        # 3. 立即启动Web服务器 (独立线程，不阻塞后续初始化)
+        #    面板数据全从DB读，扫描/交易不影响面板访问
+        logger.info(f"Starting web dashboard on {self.cfg.web['host']}:{self.cfg.web['port']}")
+        self.web_thread = Thread(target=self._start_web_server, daemon=True)
+        self.web_thread.start()
+        
+        # 4. 恢复遗留订单（重启后的关键步骤）
         with trace_context("Strategy", "恢复遗留订单"):
             from order_recovery import perform_recovery
             recovery_report = perform_recovery(self.trader.api)
@@ -100,12 +106,12 @@ class Strategy:
                          Exception("请检查恢复报告"),
                          count=len(recovery_report['manual_review_required']))
         
-        # 4. 初始化引擎
+        # 5. 初始化引擎
         with trace_context("Strategy", "初始化引擎"):
             self.engine.initialize()
             log_info("Strategy", "引擎初始化完成")
         
-        # 4. 同步持仓
+        # 6. 同步持仓
         with trace_context("Strategy", "同步持仓"):
             sync_result = self.trader.sync_positions()
             log_info("Strategy", "持仓同步完成", 
@@ -115,7 +121,7 @@ class Strategy:
                 for d in sync_result['discrepancies']:
                     logger.warning(f"  - {d}")
         
-        # 5. 执行首次扫描
+        # 7. 执行首次扫描 (面板已可访问，显示上次DB数据)
         with trace_context("Strategy", "首次扫描"):
             self._run_scan()
         
@@ -304,12 +310,7 @@ class Strategy:
         """运行策略"""
         self.running = True
         
-        # 启动Web服务器
-        logger.info(f"Starting web dashboard on {self.cfg.web['host']}:{self.cfg.web['port']}")
-        self.web_thread = Thread(target=self._start_web_server, daemon=True)
-        self.web_thread.start()
-        
-        # 启动交易循环
+        # Web已在initialize()中启动，直接进入交易循环
         try:
             self._trading_loop()
         except KeyboardInterrupt:
